@@ -15,6 +15,7 @@ struct Workspace: Identifiable, Codable, Equatable, Hashable {
 
 enum AppSection: String, CaseIterable, Identifiable {
     case compose
+    case actions
     case tasks
     case history
 
@@ -23,6 +24,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .compose: return "新任务"
+        case .actions: return "项目操作"
         case .tasks: return "任务中心"
         case .history: return "历史记录"
         }
@@ -31,6 +33,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .compose: return "square.and.pencil"
+        case .actions: return "bolt.square"
         case .tasks: return "rectangle.stack"
         case .history: return "clock.arrow.circlepath"
         }

@@ -1,0 +1,49 @@
+{
+  "actions": [
+    {
+      "script": "scripts/build_app.sh",
+      "title": "构建 CodexBar",
+      "summary": "生成本地 Release 版本的 CodexBar.app，并完成代码签名校验。",
+      "whenToUse": [
+        "修改代码后需要生成可运行应用",
+        "安装前需要验证 Release 构建",
+        "检查当前代码是否能够正常打包"
+      ],
+      "aliases": ["编译 CodexBar", "打包应用", "Release 构建"],
+      "risk": "low",
+      "quickRun": true,
+      "requiresConfirmation": false,
+      "published": true
+    },
+    {
+      "script": "scripts/install_app.sh",
+      "title": "安装或更新 CodexBar",
+      "summary": "重新构建应用，替换本机安装版本并启动 CodexBar。",
+      "whenToUse": [
+        "需要把最新代码安装到 Applications",
+        "本机 CodexBar 版本落后于源码",
+        "修复后需要重启并验证菜单栏应用"
+      ],
+      "aliases": ["重装 CodexBar", "更新 CodexBar", "重新打包重启"],
+      "risk": "medium",
+      "quickRun": false,
+      "requiresConfirmation": true,
+      "published": true
+    },
+    {
+      "script": "scripts/check-agent-tooling.sh",
+      "title": "检查 repo-harness 工具链",
+      "summary": "验证当前项目使用的 repo-harness 与 Agent 工具是否可用。",
+      "whenToUse": [
+        "repo-harness 命令无法执行",
+        "MCP 或本地工具链疑似异常",
+        "开始仓库任务前检查开发环境"
+      ],
+      "aliases": ["检查 harness", "工具链检查", "MCP 检查"],
+      "risk": "low",
+      "quickRun": true,
+      "requiresConfirmation": false,
+      "published": true
+    }
+  ]
+}

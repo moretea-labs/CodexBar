@@ -68,9 +68,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openItem.target = self
             menu.addItem(openItem)
 
+            let actionsItem = NSMenuItem(title: "项目操作", action: #selector(showActions), keyEquivalent: "")
+            actionsItem.target = self
+            menu.addItem(actionsItem)
+
             let historyItem = NSMenuItem(title: "查看历史记录", action: #selector(showHistory), keyEquivalent: "")
             historyItem.target = self
             menu.addItem(historyItem)
+
+            if !state.recentQuickActions.isEmpty {
+                let recentMenu = NSMenu(title: "最近项目操作")
+                for action in state.recentQuickActions.prefix(5) {
+                    let recentItem = NSMenuItem(
+                        title: action.title,
+                        action: #selector(runRecentAction(_:)),
+                        keyEquivalent: ""
+                    )
+                    recentItem.target = self
+                    recentItem.representedObject = action.id
+                    recentMenu.addItem(recentItem)
+                }
+                let recentParent = NSMenuItem(title: "最近项目操作", action: nil, keyEquivalent: "")
+                recentParent.submenu = recentMenu
+                menu.addItem(recentParent)
+            }
 
             let pinItem = NSMenuItem(title: "固定窗口", action: #selector(togglePinned), keyEquivalent: "")
             pinItem.target = self
@@ -85,6 +106,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 taskItem.target = self
                 menu.addItem(taskItem)
+            }
+
+            if let action = state.runningLocalAction {
+                let runningItem = NSMenuItem(
+                    title: "停止“\(action.title)”",
+                    action: #selector(stopRunningAction),
+                    keyEquivalent: ""
+                )
+                runningItem.target = self
+                menu.addItem(runningItem)
             }
 
             menu.addItem(.separator())
@@ -105,9 +136,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController?.show()
     }
 
+    @objc private func showActions() {
+        state.selectSection(.actions)
+        panelController?.show()
+    }
+
     @objc private func showHistory() {
         state.navigation = .history
         panelController?.show()
+    }
+
+    @objc private func runRecentAction(_ sender: NSMenuItem) {
+        guard let actionID = sender.representedObject as? String else { return }
+        state.runLocalAction(id: actionID)
+    }
+
+    @objc private func stopRunningAction() {
+        state.cancelRunningLocalAction()
     }
 
     @objc private func showTaskCenter() {

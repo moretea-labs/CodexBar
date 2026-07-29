@@ -13,6 +13,11 @@ let package = Package(
         .executableTarget(
             name: "CodexBar",
             path: "Sources/CodexBar"
+        ),
+        .testTarget(
+            name: "CodexBarTests",
+            dependencies: ["CodexBar"],
+            path: "Tests/CodexBarTests"
         )
     ]
 )

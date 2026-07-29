@@ -9,10 +9,16 @@ extension Notification.Name {
 @MainActor
 final class AppState: ObservableObject {
     @Published var workspaces: [Workspace] {
-        didSet { savePreferences() }
+        didSet {
+            savePreferences()
+            refreshLocalActionsIfReady()
+        }
     }
     @Published var selectedWorkspaceID: UUID? {
-        didSet { savePreferences() }
+        didSet {
+            savePreferences()
+            refreshLocalActionsIfReady()
+        }
     }
     @Published var executionMode: ExecutionMode {
         didSet { savePreferences() }
@@ -26,6 +32,15 @@ final class AppState: ObservableObject {
     @Published var history: [TaskHistoryItem] {
         didSet { savePreferences() }
     }
+
+    @Published var localActions: [LocalAction] = []
+    @Published var localActionFavoriteIDs: Set<String> = []
+    @Published var localActionHistory: [LocalActionRunRecord] = []
+    @Published var runningLocalActionID: String?
+    @Published var localActionRunOutput = ""
+    @Published var localActionStatusMessage = ""
+    @Published var lastLocalActionSucceeded: Bool?
+    @Published var isDiscoveringLocalActions = false
 
     // Session-only UI state. Pinned mode intentionally resets to false on every launch.
     @Published var navigation: AppSection = .compose
@@ -41,6 +56,8 @@ final class AppState: ObservableObject {
 
     private var runners: [UUID: CodexRunner] = [:]
     private var cancelledTaskIDs = Set<UUID>()
+    private var localActionRunner: LocalActionRunner?
+    private var localActionDiscoveryGeneration = 0
     private var isLoading = true
 
     init() {
@@ -62,11 +79,16 @@ final class AppState: ObservableObject {
             history = []
         }
 
+        let localActionState = LocalActionPersistenceStore.load()
+        localActionFavoriteIDs = Set(localActionState.favoriteIDs)
+        localActionHistory = localActionState.history
+
         if selectedWorkspace == nil {
             selectedWorkspaceID = workspaces.first?.id
         }
         isLoading = false
         detectCodex()
+        refreshLocalActions()
     }
 
     var selectedWorkspace: Workspace? {
@@ -93,6 +115,33 @@ final class AppState: ObservableObject {
 
     var completedTaskCount: Int {
         backgroundTasks.count - runningTaskCount
+    }
+
+    var availableLocalActions: [LocalAction] {
+        let usedIDs = Set(localActionHistory.map(\.actionID))
+        return localActions.filter {
+            $0.published || localActionFavoriteIDs.contains($0.id) || usedIDs.contains($0.id)
+        }
+    }
+
+    var recentLocalActionIDs: [String] {
+        let workspacePath = selectedWorkspace?.path
+        var seen = Set<String>()
+        return localActionHistory.compactMap { record in
+            guard record.workspacePath == workspacePath,
+                  seen.insert(record.actionID).inserted else { return nil }
+            return record.actionID
+        }
+    }
+
+    var recentQuickActions: [LocalAction] {
+        let actionsByID = Dictionary(uniqueKeysWithValues: localActions.map { ($0.id, $0) })
+        return recentLocalActionIDs.compactMap { actionsByID[$0] }.filter(\.isQuickRunnable)
+    }
+
+    var runningLocalAction: LocalAction? {
+        guard let runningLocalActionID else { return nil }
+        return localActions.first(where: { $0.id == runningLocalActionID })
     }
 
     var canRun: Bool {
@@ -179,7 +228,122 @@ final class AppState: ObservableObject {
         navigation = section
         if section == .compose {
             NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
+        } else if section == .actions {
+            refreshLocalActions()
         }
+    }
+
+    func refreshLocalActions() {
+        localActionDiscoveryGeneration += 1
+        let generation = localActionDiscoveryGeneration
+
+        guard let workspace = selectedWorkspace else {
+            localActions = []
+            isDiscoveringLocalActions = false
+            return
+        }
+
+        isDiscoveringLocalActions = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let actions = LocalActionCatalog.discover(workspace: workspace)
+            DispatchQueue.main.async {
+                guard let self,
+                      generation == self.localActionDiscoveryGeneration,
+                      self.selectedWorkspace?.path == workspace.path else { return }
+                self.localActions = actions
+                self.isDiscoveringLocalActions = false
+            }
+        }
+    }
+
+    func localActions(scope: LocalActionScope, matching query: String) -> [LocalAction] {
+        let base: [LocalAction]
+        switch scope {
+        case .available:
+            base = availableLocalActions
+        case .favorites:
+            base = localActions.filter { localActionFavoriteIDs.contains($0.id) }
+        case .recent:
+            let actionsByID = Dictionary(uniqueKeysWithValues: localActions.map { ($0.id, $0) })
+            base = recentLocalActionIDs.compactMap { actionsByID[$0] }
+        case .discovered:
+            base = localActions
+        }
+
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty, scope == .recent { return base }
+        return LocalActionCatalog.search(
+            base,
+            query: query,
+            favoriteIDs: localActionFavoriteIDs,
+            recentActionIDs: recentLocalActionIDs
+        )
+    }
+
+    func toggleLocalActionFavorite(_ action: LocalAction) {
+        if localActionFavoriteIDs.contains(action.id) {
+            localActionFavoriteIDs.remove(action.id)
+        } else {
+            localActionFavoriteIDs.insert(action.id)
+        }
+        saveLocalActionState()
+    }
+
+    func runLocalAction(id: String) {
+        guard let action = localActions.first(where: { $0.id == id }) else { return }
+        runLocalAction(action)
+    }
+
+    func runLocalAction(_ action: LocalAction) {
+        guard runningLocalActionID == nil else {
+            localActionStatusMessage = "已有项目操作正在执行。"
+            return
+        }
+        guard FileManager.default.fileExists(atPath: action.scriptPath) else {
+            localActionStatusMessage = "脚本已不存在，请刷新项目操作。"
+            lastLocalActionSucceeded = false
+            return
+        }
+        guard FileManager.default.fileExists(atPath: action.workingDirectory) else {
+            localActionStatusMessage = "工作目录已不存在。"
+            lastLocalActionSucceeded = false
+            return
+        }
+
+        let runner = LocalActionRunner()
+        let startedAt = Date()
+        localActionRunner = runner
+        runningLocalActionID = action.id
+        localActionRunOutput = ""
+        localActionStatusMessage = "正在执行“\(action.title)”…"
+        lastLocalActionSucceeded = nil
+
+        do {
+            try runner.start(
+                action: action,
+                onOutput: { [weak self] chunk in
+                    DispatchQueue.main.async {
+                        self?.appendLocalActionOutput(chunk)
+                    }
+                },
+                onCompletion: { [weak self] result in
+                    DispatchQueue.main.async {
+                        self?.finishLocalAction(action, startedAt: startedAt, result: result)
+                    }
+                }
+            )
+        } catch {
+            localActionRunner = nil
+            runningLocalActionID = nil
+            lastLocalActionSucceeded = false
+            localActionStatusMessage = error.localizedDescription
+        }
+    }
+
+    func cancelRunningLocalAction() {
+        guard runningLocalActionID != nil else { return }
+        localActionStatusMessage = "正在停止项目操作…"
+        localActionRunner?.cancel()
     }
 
     func selectTask(_ id: UUID, openTaskCenter: Bool = false) {
@@ -297,6 +461,7 @@ final class AppState: ObservableObject {
         for task in backgroundTasks where task.status.isRunning {
             cancelTask(id: task.id)
         }
+        cancelRunningLocalAction()
     }
 
     func removeTask(id: UUID) {
@@ -565,6 +730,57 @@ final class AppState: ObservableObject {
                 selectedTaskID = backgroundTasks.first?.id
             }
         }
+    }
+
+    private func refreshLocalActionsIfReady() {
+        guard !isLoading else { return }
+        refreshLocalActions()
+    }
+
+    private func appendLocalActionOutput(_ chunk: String) {
+        localActionRunOutput.append(chunk)
+        if localActionRunOutput.count > 120_000 {
+            localActionRunOutput = String(localActionRunOutput.suffix(100_000))
+        }
+    }
+
+    private func finishLocalAction(
+        _ action: LocalAction,
+        startedAt: Date,
+        result: Result<Int32, Error>
+    ) {
+        localActionRunner = nil
+        runningLocalActionID = nil
+        let finishedAt = Date()
+
+        switch result {
+        case .success(let exitCode):
+            let record = LocalActionRunRecord(
+                action: action,
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                exitCode: exitCode,
+                outputTail: String(localActionRunOutput.suffix(20_000))
+            )
+            localActionHistory.insert(record, at: 0)
+            localActionHistory = Array(localActionHistory.prefix(100))
+            lastLocalActionSucceeded = exitCode == 0
+            localActionStatusMessage = exitCode == 0
+                ? "“\(action.title)”执行成功。"
+                : "“\(action.title)”执行失败，状态码：\(exitCode)"
+            saveLocalActionState()
+            refreshLocalActions()
+        case .failure(let error):
+            lastLocalActionSucceeded = false
+            localActionStatusMessage = error.localizedDescription
+        }
+    }
+
+    private func saveLocalActionState() {
+        LocalActionPersistenceStore.save(
+            favoriteIDs: localActionFavoriteIDs,
+            history: localActionHistory
+        )
     }
 
     private func prependHistory(_ item: TaskHistoryItem) {

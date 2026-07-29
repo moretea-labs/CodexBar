@@ -44,6 +44,7 @@ struct LauncherView: View {
 
             VStack(spacing: 4) {
                 navigationButton(.compose)
+                navigationButton(.actions)
                 navigationButton(.tasks, badge: state.runningTaskCount)
                 navigationButton(.history, badge: state.history.count)
             }
@@ -177,6 +178,8 @@ struct LauncherView: View {
         switch state.navigation {
         case .compose:
             composeContent
+        case .actions:
+            LocalActionsView(state: state)
         case .tasks:
             taskCenterContent
         case .history:
