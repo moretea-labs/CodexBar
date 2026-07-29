@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum LocalActionRisk: String, Codable, CaseIterable, Identifiable, Hashable {
@@ -29,6 +30,7 @@ enum LocalActionSource: String, Codable, Hashable {
     case sidecarManifest
     case inlineAnnotation
     case discovered
+    case userCustomization
 
     var title: String {
         switch self {
@@ -36,6 +38,7 @@ enum LocalActionSource: String, Codable, Hashable {
         case .sidecarManifest: return "脚本清单"
         case .inlineAnnotation: return "脚本注解"
         case .discovered: return "自动发现"
+        case .userCustomization: return "已整理"
         }
     }
 }
@@ -76,9 +79,22 @@ struct LocalAction: Identifiable, Equatable, Hashable {
     let workingDirectory: String
     let arguments: [String]
     let modifiedAt: Date?
+    let contentFingerprint: String?
+    let quickRunApprovalFingerprint: String?
+    let isCustomized: Bool
+
+    var quickRunNeedsReview: Bool {
+        isCustomized
+            && quickRun
+            && (contentFingerprint == nil || quickRunApprovalFingerprint != contentFingerprint)
+    }
 
     var isQuickRunnable: Bool {
-        published && quickRun && risk == .low && !requiresConfirmation
+        published
+            && quickRun
+            && risk == .low
+            && !requiresConfirmation
+            && !quickRunNeedsReview
     }
 
     var commandPreview: String {
@@ -87,6 +103,66 @@ struct LocalAction: Identifiable, Equatable, Hashable {
 
     var primaryUsage: String {
         whenToUse.first ?? summary
+    }
+
+    func applying(_ customization: LocalActionCustomization) -> LocalAction {
+        guard customization.actionID == id else { return self }
+        let allowsQuickRun = customization.risk == .low && customization.quickRun
+        return LocalAction(
+            id: id,
+            workspaceName: workspaceName,
+            workspacePath: workspacePath,
+            scriptPath: scriptPath,
+            relativePath: relativePath,
+            title: customization.title,
+            summary: customization.summary,
+            whenToUse: customization.whenToUse,
+            aliases: customization.aliases,
+            risk: customization.risk,
+            quickRun: allowsQuickRun,
+            requiresConfirmation: !allowsQuickRun,
+            published: true,
+            source: .userCustomization,
+            workingDirectory: workingDirectory,
+            arguments: arguments,
+            modifiedAt: modifiedAt,
+            contentFingerprint: contentFingerprint,
+            quickRunApprovalFingerprint: customization.approvedFingerprint,
+            isCustomized: true
+        )
+    }
+}
+
+struct LocalActionCustomization: Codable, Equatable {
+    let actionID: String
+    var title: String
+    var summary: String
+    var whenToUse: [String]
+    var aliases: [String]
+    var risk: LocalActionRisk
+    var quickRun: Bool
+    var approvedFingerprint: String?
+    var updatedAt: Date
+
+    init(
+        action: LocalAction,
+        title: String,
+        summary: String,
+        whenToUse: [String],
+        aliases: [String],
+        risk: LocalActionRisk,
+        quickRun: Bool,
+        updatedAt: Date = Date()
+    ) {
+        actionID = action.id
+        self.title = title
+        self.summary = summary
+        self.whenToUse = whenToUse
+        self.aliases = aliases
+        self.risk = risk
+        self.quickRun = risk == .low && quickRun
+        approvedFingerprint = self.quickRun ? action.contentFingerprint : nil
+        self.updatedAt = updatedAt
     }
 }
 
@@ -128,6 +204,33 @@ struct LocalActionRunRecord: Identifiable, Codable, Equatable {
 struct LocalActionSavedState: Codable {
     var favoriteIDs: [String]
     var history: [LocalActionRunRecord]
+    var customizations: [String: LocalActionCustomization]
+
+    init(
+        favoriteIDs: [String],
+        history: [LocalActionRunRecord],
+        customizations: [String: LocalActionCustomization] = [:]
+    ) {
+        self.favoriteIDs = favoriteIDs
+        self.history = history
+        self.customizations = customizations
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case favoriteIDs
+        case history
+        case customizations
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        favoriteIDs = try container.decodeIfPresent([String].self, forKey: .favoriteIDs) ?? []
+        history = try container.decodeIfPresent([LocalActionRunRecord].self, forKey: .history) ?? []
+        customizations = try container.decodeIfPresent(
+            [String: LocalActionCustomization].self,
+            forKey: .customizations
+        ) ?? [:]
+    }
 }
 
 enum LocalActionPersistenceStore {
@@ -136,15 +239,20 @@ enum LocalActionPersistenceStore {
     static func load() -> LocalActionSavedState {
         guard let data = UserDefaults.standard.data(forKey: key),
               let state = try? JSONDecoder().decode(LocalActionSavedState.self, from: data) else {
-            return LocalActionSavedState(favoriteIDs: [], history: [])
+            return LocalActionSavedState(favoriteIDs: [], history: [], customizations: [:])
         }
         return state
     }
 
-    static func save(favoriteIDs: Set<String>, history: [LocalActionRunRecord]) {
+    static func save(
+        favoriteIDs: Set<String>,
+        history: [LocalActionRunRecord],
+        customizations: [String: LocalActionCustomization]
+    ) {
         let state = LocalActionSavedState(
             favoriteIDs: Array(favoriteIDs).sorted(),
-            history: Array(history.prefix(100))
+            history: Array(history.prefix(100)),
+            customizations: customizations
         )
         guard let data = try? JSONEncoder().encode(state) else { return }
         UserDefaults.standard.set(data, forKey: key)
@@ -414,7 +522,10 @@ enum LocalActionCatalog {
             source: source,
             workingDirectory: workingDirectoryURL.path,
             arguments: metadata.arguments ?? [],
-            modifiedAt: modificationDate(scriptURL)
+            modifiedAt: modificationDate(scriptURL),
+            contentFingerprint: fileFingerprint(scriptURL),
+            quickRunApprovalFingerprint: nil,
+            isCustomized: false
         )
     }
 
@@ -444,7 +555,10 @@ enum LocalActionCatalog {
             source: source,
             workingDirectory: rootURL.path,
             arguments: [],
-            modifiedAt: modificationDate(scriptURL)
+            modifiedAt: modificationDate(scriptURL),
+            contentFingerprint: fileFingerprint(scriptURL),
+            quickRunApprovalFingerprint: nil,
+            isCustomized: false
         )
     }
 
@@ -467,7 +581,10 @@ enum LocalActionCatalog {
             source: .discovered,
             workingDirectory: rootURL.path,
             arguments: [],
-            modifiedAt: modificationDate(scriptURL)
+            modifiedAt: modificationDate(scriptURL),
+            contentFingerprint: fileFingerprint(scriptURL),
+            quickRunApprovalFingerprint: nil,
+            isCustomized: false
         )
     }
 
@@ -534,6 +651,13 @@ enum LocalActionCatalog {
 
     private static func modificationDate(_ url: URL) -> Date? {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    private static func fileFingerprint(_ url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        return SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private static func normalize(_ value: String) -> String {

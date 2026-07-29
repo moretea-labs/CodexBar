@@ -76,6 +76,70 @@ final class LocalActionsTests: XCTestCase {
         XCTAssertEqual(results.first?.title, "重启 Controller")
     }
 
+    func testCustomizationPublishesDiscoveredActionAndUsesConfirmedMetadata() throws {
+        try writeScript("scripts/repair.sh")
+        let action = try XCTUnwrap(
+            LocalActionCatalog.discover(workspace: workspace)
+                .first(where: { $0.relativePath == "scripts/repair.sh" })
+        )
+
+        let customization = LocalActionCustomization(
+            action: action,
+            title: "修复本地环境",
+            summary: "恢复项目依赖和缓存",
+            whenToUse: ["构建工具无法启动"],
+            aliases: ["修复环境"],
+            risk: .low,
+            quickRun: true
+        )
+        let curated = action.applying(customization)
+
+        XCTAssertTrue(curated.published)
+        XCTAssertTrue(curated.isCustomized)
+        XCTAssertEqual(curated.source, .userCustomization)
+        XCTAssertEqual(curated.title, "修复本地环境")
+        XCTAssertEqual(curated.primaryUsage, "构建工具无法启动")
+        XCTAssertTrue(curated.isQuickRunnable)
+    }
+
+    func testChangedScriptInvalidatesCustomizedQuickRunApproval() throws {
+        try writeScript("scripts/cleanup.sh", body: "echo first")
+        let original = try XCTUnwrap(
+            LocalActionCatalog.discover(workspace: workspace)
+                .first(where: { $0.relativePath == "scripts/cleanup.sh" })
+        )
+        let customization = LocalActionCustomization(
+            action: original,
+            title: "清理缓存",
+            summary: "清理本地缓存",
+            whenToUse: ["缓存损坏"],
+            aliases: [],
+            risk: .low,
+            quickRun: true
+        )
+        XCTAssertTrue(original.applying(customization).isQuickRunnable)
+
+        try writeScript("scripts/cleanup.sh", body: "echo changed")
+        let changed = try XCTUnwrap(
+            LocalActionCatalog.discover(workspace: workspace)
+                .first(where: { $0.relativePath == "scripts/cleanup.sh" })
+        )
+        let reviewed = changed.applying(customization)
+
+        XCTAssertTrue(reviewed.quickRunNeedsReview)
+        XCTAssertFalse(reviewed.isQuickRunnable)
+    }
+
+    func testSavedStateDecodesLegacyPayloadWithoutCustomizations() throws {
+        let data = try JSONSerialization.data(
+            withJSONObject: ["favoriteIDs": ["fixture"], "history": []]
+        )
+        let state = try JSONDecoder().decode(LocalActionSavedState.self, from: data)
+
+        XCTAssertEqual(state.favoriteIDs, ["fixture"])
+        XCTAssertTrue(state.customizations.isEmpty)
+    }
+
     func testQuickRunRequiresPublishedLowRiskActionWithoutConfirmation() {
         let mediumRisk = makeAction(risk: .medium, quickRun: true, requiresConfirmation: false, published: true)
         let unpublished = makeAction(risk: .low, quickRun: true, requiresConfirmation: false, published: false)
@@ -92,13 +156,13 @@ final class LocalActionsTests: XCTestCase {
         Workspace(name: "Fixture", path: temporaryDirectory.path)
     }
 
-    private func writeScript(_ relativePath: String) throws {
+    private func writeScript(_ relativePath: String, body: String = "echo ok") throws {
         let url = temporaryDirectory.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try "#!/bin/bash\necho ok\n".write(to: url, atomically: true, encoding: .utf8)
+        try "#!/bin/bash\n\(body)\n".write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
             ofItemAtPath: url.path
@@ -138,7 +202,10 @@ final class LocalActionsTests: XCTestCase {
             source: .workspaceManifest,
             workingDirectory: "/tmp/fixture",
             arguments: [],
-            modifiedAt: nil
+            modifiedAt: nil,
+            contentFingerprint: "fixture-fingerprint",
+            quickRunApprovalFingerprint: nil,
+            isCustomized: false
         )
     }
 }

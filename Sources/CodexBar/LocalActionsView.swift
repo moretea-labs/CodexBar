@@ -6,6 +6,7 @@ struct LocalActionsView: View {
     @State private var scope: LocalActionScope = .available
     @State private var query = ""
     @State private var pendingAction: LocalAction?
+    @State private var editingAction: LocalAction?
 
     private var displayedActions: [LocalAction] {
         state.localActions(scope: scope, matching: query)
@@ -26,6 +27,14 @@ struct LocalActionsView: View {
         }
         .alert(item: $pendingAction) { action in
             confirmationAlert(for: action)
+        }
+        .sheet(item: $editingAction) { action in
+            LocalActionEditorSheet(
+                action: action,
+                existingCustomization: state.localActionCustomizations[action.id],
+                onSave: { state.saveLocalActionCustomization($0) },
+                onRemove: { state.removeLocalActionCustomization(for: action) }
+            )
         }
     }
 
@@ -162,6 +171,13 @@ struct LocalActionsView: View {
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
                             .background(Color.accentColor.opacity(0.1), in: Capsule())
+                    } else if action.quickRunNeedsReview {
+                        Text("脚本已更新")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.1), in: Capsule())
                     }
                 }
 
@@ -196,13 +212,22 @@ struct LocalActionsView: View {
                 .fixedSize()
 
             Button {
+                editingAction = action
+            } label: {
+                Image(systemName: action.isCustomized ? "slider.horizontal.3" : "wand.and.stars")
+                    .foregroundStyle(action.isCustomized ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(action.isCustomized ? "编辑操作说明" : "整理为操作")
+
+            Button {
                 state.toggleLocalActionFavorite(action)
             } label: {
                 Image(systemName: state.localActionFavoriteIDs.contains(action.id) ? "star.fill" : "star")
                     .foregroundStyle(state.localActionFavoriteIDs.contains(action.id) ? Color.accentColor : Color.secondary)
             }
             .buttonStyle(.plain)
-            .help(state.localActionFavoriteIDs.contains(action.id) ? "取消收藏" : "收藏并加入可用操作")
+            .help(state.localActionFavoriteIDs.contains(action.id) ? "取消收藏" : "收藏")
 
             Button {
                 requestRun(action)
@@ -305,7 +330,7 @@ struct LocalActionsView: View {
         if !query.isEmpty { return "可以尝试脚本名称、适用场景或问题描述。" }
         switch scope {
         case .available:
-            return "在 .codexbar/actions.json 中发布操作，或到“已发现”收藏一个脚本。"
+            return "在 .codexbar/actions.json 中发布操作，或到“已发现”把真正需要的脚本整理为操作。"
         case .favorites:
             return "收藏只保留真正会反复使用的操作，避免列表再次变成脚本仓库。"
         case .recent:
@@ -348,5 +373,204 @@ struct LocalActionsView: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+private struct LocalActionEditorSheet: View {
+    let action: LocalAction
+    let existingCustomization: LocalActionCustomization?
+    let onSave: (LocalActionCustomization) -> Void
+    let onRemove: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var summary: String
+    @State private var whenToUseText: String
+    @State private var aliasesText: String
+    @State private var risk: LocalActionRisk
+    @State private var quickRun: Bool
+
+    init(
+        action: LocalAction,
+        existingCustomization: LocalActionCustomization?,
+        onSave: @escaping (LocalActionCustomization) -> Void,
+        onRemove: @escaping () -> Void
+    ) {
+        self.action = action
+        self.existingCustomization = existingCustomization
+        self.onSave = onSave
+        self.onRemove = onRemove
+        _title = State(initialValue: existingCustomization?.title ?? action.title)
+        _summary = State(initialValue: existingCustomization?.summary ?? action.summary)
+        _whenToUseText = State(
+            initialValue: (existingCustomization?.whenToUse ?? action.whenToUse).joined(separator: "\n")
+        )
+        _aliasesText = State(
+            initialValue: (existingCustomization?.aliases ?? action.aliases).joined(separator: "，")
+        )
+        _risk = State(initialValue: existingCustomization?.risk ?? action.risk)
+        _quickRun = State(initialValue: existingCustomization?.quickRun ?? action.quickRun)
+    }
+
+    private var normalizedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedUsage: [String] {
+        split(whenToUseText, separators: ["\n", "；", ";"])
+    }
+
+    private var normalizedAliases: [String] {
+        split(aliasesText, separators: ["，", ",", "；", ";", "\n"])
+    }
+
+    private var canSave: Bool {
+        !normalizedTitle.isEmpty && !normalizedUsage.isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(existingCustomization == nil ? "整理为项目操作" : "编辑项目操作")
+                        .font(.title3.weight(.semibold))
+                    Text(action.relativePath)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+            }
+
+            if action.quickRunNeedsReview {
+                Label(
+                    "脚本内容已变化。一键执行已暂停，检查后保存即可重新确认。",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(Color.orange)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow {
+                    Text("名称")
+                        .foregroundStyle(.secondary)
+                    TextField("例如：重启本地 Controller", text: $title)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                GridRow(alignment: .top) {
+                    Text("作用")
+                        .foregroundStyle(.secondary)
+                    TextField("简要说明执行后会发生什么", text: $summary)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                GridRow(alignment: .top) {
+                    Text("什么时候用")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 5) {
+                        TextEditor(text: $whenToUseText)
+                            .font(.system(size: 12))
+                            .frame(height: 82)
+                            .padding(5)
+                            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+                        Text("每行一个场景；这是搜索和推荐的主要依据。")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                GridRow {
+                    Text("别名")
+                        .foregroundStyle(.secondary)
+                    TextField("例如：恢复 harness，MCP 修复", text: $aliasesText)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                GridRow {
+                    Text("风险")
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $risk) {
+                        ForEach(LocalActionRisk.allCases) { item in
+                            Text(item.title).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                GridRow(alignment: .top) {
+                    Text("执行")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("允许一键执行", isOn: $quickRun)
+                            .disabled(risk != .low)
+                        Text(risk == .low
+                             ? "仅低风险操作可跳过确认；脚本修改后会自动暂停。"
+                             : "中高风险操作每次都会显示命令并确认。")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .font(.system(size: 12))
+
+            HStack {
+                if existingCustomization != nil {
+                    Button("移除整理") {
+                        onRemove()
+                        dismiss()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Spacer()
+
+                Button("取消") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("保存") {
+                    let customization = LocalActionCustomization(
+                        action: action,
+                        title: normalizedTitle,
+                        summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
+                        whenToUse: normalizedUsage,
+                        aliases: normalizedAliases,
+                        risk: risk,
+                        quickRun: quickRun
+                    )
+                    onSave(customization)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
+            }
+        }
+        .padding(20)
+        .frame(width: 540)
+        .onChange(of: risk) { newRisk in
+            if newRisk != .low {
+                quickRun = false
+            }
+        }
+    }
+
+    private func split(_ value: String, separators: [String]) -> [String] {
+        var normalized = value
+        for separator in separators {
+            normalized = normalized.replacingOccurrences(of: separator, with: "\n")
+        }
+        var seen = Set<String>()
+        return normalized
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 }

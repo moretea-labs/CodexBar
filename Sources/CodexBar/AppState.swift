@@ -36,6 +36,7 @@ final class AppState: ObservableObject {
     @Published var localActions: [LocalAction] = []
     @Published var localActionFavoriteIDs: Set<String> = []
     @Published var localActionHistory: [LocalActionRunRecord] = []
+    @Published var localActionCustomizations: [String: LocalActionCustomization] = [:]
     @Published var runningLocalActionID: String?
     @Published var localActionRunOutput = ""
     @Published var localActionStatusMessage = ""
@@ -82,6 +83,7 @@ final class AppState: ObservableObject {
         let localActionState = LocalActionPersistenceStore.load()
         localActionFavoriteIDs = Set(localActionState.favoriteIDs)
         localActionHistory = localActionState.history
+        localActionCustomizations = localActionState.customizations
 
         if selectedWorkspace == nil {
             selectedWorkspaceID = workspaces.first?.id
@@ -118,10 +120,7 @@ final class AppState: ObservableObject {
     }
 
     var availableLocalActions: [LocalAction] {
-        let usedIDs = Set(localActionHistory.map(\.actionID))
-        return localActions.filter {
-            $0.published || localActionFavoriteIDs.contains($0.id) || usedIDs.contains($0.id)
-        }
+        localActions.filter(\.published)
     }
 
     var recentLocalActionIDs: [String] {
@@ -244,8 +243,12 @@ final class AppState: ObservableObject {
         }
 
         isDiscoveringLocalActions = true
+        let customizations = localActionCustomizations
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let actions = LocalActionCatalog.discover(workspace: workspace)
+            let actions = LocalActionCatalog.discover(workspace: workspace).map { action in
+                guard let customization = customizations[action.id] else { return action }
+                return action.applying(customization)
+            }
             DispatchQueue.main.async {
                 guard let self,
                       generation == self.localActionDiscoveryGeneration,
@@ -287,6 +290,18 @@ final class AppState: ObservableObject {
             localActionFavoriteIDs.insert(action.id)
         }
         saveLocalActionState()
+    }
+
+    func saveLocalActionCustomization(_ customization: LocalActionCustomization) {
+        localActionCustomizations[customization.actionID] = customization
+        saveLocalActionState()
+        refreshLocalActions()
+    }
+
+    func removeLocalActionCustomization(for action: LocalAction) {
+        localActionCustomizations.removeValue(forKey: action.id)
+        saveLocalActionState()
+        refreshLocalActions()
     }
 
     func runLocalAction(id: String) {
@@ -779,7 +794,8 @@ final class AppState: ObservableObject {
     private func saveLocalActionState() {
         LocalActionPersistenceStore.save(
             favoriteIDs: localActionFavoriteIDs,
-            history: localActionHistory
+            history: localActionHistory,
+            customizations: localActionCustomizations
         )
     }
 
