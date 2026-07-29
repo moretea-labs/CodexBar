@@ -10,14 +10,20 @@ struct LauncherView: View {
     private let sidebarWidth: CGFloat = 220
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-                .frame(width: sidebarWidth)
-            Divider().opacity(0.45)
-            mainContent
+        ZStack {
+            LauncherVisualBackdrop()
+
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: sidebarWidth)
+                Rectangle()
+                    .fill(.primary.opacity(0.075))
+                    .frame(width: 1)
+                mainContent
+            }
+            .background(.ultraThinMaterial)
         }
         .frame(width: 980, height: 620)
-        .background(.ultraThinMaterial)
         .sheet(isPresented: $showsSettings) {
             SettingsView(state: state)
         }
@@ -28,9 +34,22 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 9) {
                 Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 30, height: 30)
-                    .background(.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.accentColor, Color.indigo.opacity(0.88)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(.white.opacity(0.18), lineWidth: 1)
+                    }
+                    .shadow(color: Color.accentColor.opacity(0.28), radius: 10, y: 4)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("CodexBar")
                         .font(.headline)
@@ -104,7 +123,12 @@ struct LauncherView: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 14)
         }
-        .background(.black.opacity(0.035))
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(.white.opacity(0.08))
+                .frame(width: 1)
+        }
     }
 
     private func navigationButton(_ section: AppSection, badge: Int = 0) -> some View {
@@ -129,10 +153,19 @@ struct LauncherView: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background(
-                selected ? Color.accentColor.opacity(0.13) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 9)
-            )
+            .background {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(selected ? Color.accentColor.opacity(0.095) : Color.clear)
+                    }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(selected ? Color.accentColor.opacity(0.18) : Color.clear, lineWidth: 1)
+            }
+            .shadow(color: selected ? Color.accentColor.opacity(0.10) : .clear, radius: 7, y: 3)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -164,10 +197,19 @@ struct LauncherView: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background(
-                selected ? Color.accentColor.opacity(0.13) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 9)
-            )
+            .background {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(selected ? Color.accentColor.opacity(0.085) : Color.clear)
+                    }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(selected ? Color.accentColor.opacity(0.16) : Color.clear, lineWidth: 1)
+            }
+            .shadow(color: selected ? Color.accentColor.opacity(0.08) : .clear, radius: 6, y: 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1199,5 +1241,42 @@ private struct MarkdownSegment: Identifiable {
             result.append(MarkdownSegment(kind: .markdown, content: value))
         }
         return result
+    }
+}
+
+
+private struct LauncherVisualBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.075),
+                    Color.clear,
+                    Color.indigo.opacity(0.045)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .fill(Color.accentColor.opacity(0.13))
+                .frame(width: 320, height: 320)
+                .blur(radius: 95)
+                .offset(x: -360, y: -270)
+
+            Circle()
+                .fill(Color.purple.opacity(0.09))
+                .frame(width: 280, height: 280)
+                .blur(radius: 100)
+                .offset(x: 390, y: 270)
+
+            Circle()
+                .fill(Color.cyan.opacity(0.065))
+                .frame(width: 230, height: 230)
+                .blur(radius: 90)
+                .offset(x: 270, y: -280)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }

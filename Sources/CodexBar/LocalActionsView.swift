@@ -7,23 +7,28 @@ struct LocalActionsView: View {
     @State private var query = ""
     @State private var pendingAction: LocalAction?
     @State private var editingAction: LocalAction?
+    @State private var hoveredActionID: String?
+    @FocusState private var searchFocused: Bool
 
     private var displayedActions: [LocalAction] {
         state.localActions(scope: scope, matching: query)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().opacity(0.45)
+        ZStack {
+            LocalActionsBackdrop()
 
-            VStack(spacing: 14) {
-                searchBar
-                scopePicker
-                actionList
-                runResult
+            VStack(spacing: 0) {
+                header
+
+                VStack(spacing: 14) {
+                    searchBar
+                    scopePicker
+                    actionList
+                    runResult
+                }
+                .padding(18)
             }
-            .padding(18)
         }
         .alert(item: $pendingAction) { action in
             confirmationAlert(for: action)
@@ -39,21 +44,56 @@ struct LocalActionsView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 13) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.accentColor, Color.indigo.opacity(0.88)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .shadow(color: Color.accentColor.opacity(0.28), radius: 12, y: 5)
+
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 38, height: 38)
+
             VStack(alignment: .leading, spacing: 3) {
-                Text("项目操作")
-                    .font(.title3.weight(.semibold))
-                Text(state.selectedWorkspace.map { "\($0.name) · \(state.availableLocalActions.count) 个可用操作" }
+                HStack(spacing: 7) {
+                    Text("项目操作")
+                        .font(.title3.weight(.semibold))
+
+                    if state.availableLocalActions.count > 0 {
+                        Text("\(state.availableLocalActions.count) 可用")
+                            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.11), in: Capsule())
+                    }
+                }
+
+                Text(state.selectedWorkspace.map { "\($0.name) · 从少量明确操作开始，而不是展示全部脚本" }
                      ?? "请先选择工作目录")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer()
 
             if state.isDiscoveringLocalActions {
-                ProgressView()
-                    .controlSize(.small)
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("扫描中")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Button {
@@ -61,19 +101,29 @@ struct LocalActionsView: View {
             } label: {
                 Label("重新扫描", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(LocalActionToolbarButtonStyle())
             .disabled(state.selectedWorkspace == nil || state.isDiscoveringLocalActions)
         }
         .padding(.horizontal, 18)
-        .frame(height: 72)
+        .frame(height: 80)
+        .background(.thinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(.primary.opacity(0.07))
+                .frame(height: 1)
+        }
     }
 
     private var searchBar: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(searchFocused ? Color.accentColor : Color.secondary)
+
             TextField("搜索操作、用途或问题，例如“MCP 连不上”", text: $query)
                 .textFieldStyle(.plain)
+                .focused($searchFocused)
+
             if !query.isEmpty {
                 Button {
                     query = ""
@@ -83,27 +133,89 @@ struct LocalActionsView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            Text("⌘F")
+                .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 5))
         }
-        .padding(.horizontal, 12)
-        .frame(height: 38)
-        .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 13)
+        .frame(height: 42)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    searchFocused ? Color.accentColor.opacity(0.62) : Color.primary.opacity(0.08),
+                    lineWidth: searchFocused ? 1.4 : 1
+                )
+        }
+        .shadow(
+            color: searchFocused ? Color.accentColor.opacity(0.16) : Color.black.opacity(0.04),
+            radius: searchFocused ? 12 : 5,
+            y: 3
+        )
+        .animation(.easeOut(duration: 0.18), value: searchFocused)
     }
 
     private var scopePicker: some View {
         HStack(spacing: 12) {
-            Picker("", selection: $scope) {
+            HStack(spacing: 4) {
                 ForEach(LocalActionScope.allCases) { item in
-                    Text(item.title).tag(item)
+                    let selected = scope == item
+                    Button {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            scope = item
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: item.systemImage)
+                                .font(.system(size: 10.5, weight: .semibold))
+                            Text(item.title)
+                                .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                            Text("\(scopeCount(item))")
+                                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(
+                                    selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.045),
+                                    in: Capsule()
+                                )
+                        }
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(.regularMaterial)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                            .fill(Color.accentColor.opacity(0.07))
+                                    }
+                                    .shadow(color: .black.opacity(0.09), radius: 4, y: 2)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 430)
+            .padding(4)
+            .glassSurface(cornerRadius: 12, tint: Color.primary.opacity(0.01), shadowEnabled: false)
 
             Spacer()
 
-            Text("扫描到 \(state.localActions.count) 个脚本")
+            Label("扫描到 \(state.localActions.count) 个脚本", systemImage: "doc.text.magnifyingglass")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().stroke(.primary.opacity(0.07), lineWidth: 1)
+                }
         }
     }
 
@@ -143,41 +255,49 @@ struct LocalActionsView: View {
     }
 
     private func actionRow(_ action: LocalAction) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: action.published ? "bolt.fill" : "doc.text.magnifyingglass")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(action.published ? Color.accentColor : Color.secondary)
-                .frame(width: 32, height: 32)
-                .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+        let accent = actionAccent(action)
+        let hovering = hoveredActionID == action.id
+        let favorite = state.localActionFavoriteIDs.contains(action.id)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 7) {
+        return HStack(spacing: 13) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [accent.opacity(0.22), accent.opacity(0.08)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(accent.opacity(0.18), lineWidth: 1)
+                    }
+
+                Image(systemName: action.published ? actionIcon(action) : "doc.text.magnifyingglass")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(accent)
+            }
+            .frame(width: 38, height: 38)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
                     Text(action.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 13.5, weight: .semibold))
                         .lineLimit(1)
 
                     if !action.published {
-                        Text("未发布")
-                            .font(.system(size: 9, weight: .semibold))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(.secondary.opacity(0.12), in: Capsule())
+                        LocalActionBadge(title: "未发布", systemImage: "eye.slash", color: .gray)
+                    }
+
+                    if action.isCustomized {
+                        LocalActionBadge(title: "已整理", systemImage: "checkmark.seal.fill", color: .purple)
                     }
 
                     if action.isQuickRunnable {
-                        Text("一键执行")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.accentColor.opacity(0.1), in: Capsule())
+                        LocalActionBadge(title: "一键执行", systemImage: "bolt.fill", color: .green)
                     } else if action.quickRunNeedsReview {
-                        Text("脚本已更新")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(Color.orange)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.1), in: Capsule())
+                        LocalActionBadge(title: "脚本已更新", systemImage: "arrow.triangle.2.circlepath", color: .orange)
                     }
                 }
 
@@ -198,6 +318,7 @@ struct LocalActionsView: View {
                             record.succeeded ? relativeDate(record.finishedAt) : "上次失败",
                             systemImage: record.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill"
                         )
+                        .foregroundStyle(record.succeeded ? Color.green.opacity(0.85) : Color.red.opacity(0.9))
                     }
                 }
                 .foregroundStyle(.tertiary)
@@ -205,71 +326,94 @@ struct LocalActionsView: View {
 
             Spacer(minLength: 8)
 
-            Label(action.risk.title, systemImage: action.risk.systemImage)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(action.risk == .high ? Color.red : Color.secondary)
-                .labelStyle(.titleAndIcon)
-                .fixedSize()
+            LocalActionBadge(
+                title: action.risk.title,
+                systemImage: action.risk.systemImage,
+                color: action.risk.tintColor
+            )
 
             Button {
                 editingAction = action
             } label: {
-                Image(systemName: action.isCustomized ? "slider.horizontal.3" : "wand.and.stars")
-                    .foregroundStyle(action.isCustomized ? Color.accentColor : Color.secondary)
+                Label(
+                    action.isCustomized ? "编辑" : "整理",
+                    systemImage: action.isCustomized ? "slider.horizontal.3" : "wand.and.stars"
+                )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LocalActionCompactButtonStyle(tint: action.isCustomized ? .purple : .gray))
             .help(action.isCustomized ? "编辑操作说明" : "整理为操作")
 
             Button {
                 state.toggleLocalActionFavorite(action)
             } label: {
-                Image(systemName: state.localActionFavoriteIDs.contains(action.id) ? "star.fill" : "star")
-                    .foregroundStyle(state.localActionFavoriteIDs.contains(action.id) ? Color.accentColor : Color.secondary)
+                Image(systemName: favorite ? "star.fill" : "star")
             }
-            .buttonStyle(.plain)
-            .help(state.localActionFavoriteIDs.contains(action.id) ? "取消收藏" : "收藏")
+            .buttonStyle(LocalActionIconButtonStyle(tint: favorite ? .orange : .gray))
+            .help(favorite ? "取消收藏" : "收藏")
 
             Button {
                 requestRun(action)
             } label: {
-                if state.runningLocalActionID == action.id {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 16, height: 16)
-                } else {
-                    Image(systemName: action.isQuickRunnable ? "play.fill" : "play")
-                        .frame(width: 16, height: 16)
+                HStack(spacing: 6) {
+                    if state.runningLocalActionID == action.id {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: action.isQuickRunnable ? "play.fill" : "checkmark.circle")
+                    }
+                    Text(state.runningLocalActionID == action.id
+                         ? "运行中"
+                         : (action.isQuickRunnable ? "运行" : "确认"))
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            .buttonStyle(LocalActionRunButtonStyle(tint: accent))
             .disabled(state.runningLocalActionID != nil)
             .help(action.isQuickRunnable ? "立即执行" : "查看命令并确认")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
-        .overlay {
-            RoundedRectangle(cornerRadius: 11)
-                .stroke(.primary.opacity(0.055), lineWidth: 1)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .glassSurface(
+            cornerRadius: 14,
+            tint: accent.opacity(hovering ? 0.075 : 0.025),
+            shadowEnabled: hovering
+        )
+        .scaleEffect(hovering ? 1.003 : 1)
+        .animation(.easeOut(duration: 0.16), value: hovering)
+        .onHover { isHovering in
+            if isHovering {
+                hoveredActionID = action.id
+            } else if hoveredActionID == action.id {
+                hoveredActionID = nil
+            }
         }
     }
 
     @ViewBuilder
     private var runResult: some View {
         if state.runningLocalActionID != nil || !state.localActionRunOutput.isEmpty || !state.localActionStatusMessage.isEmpty {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 8) {
-                    if state.runningLocalActionID != nil {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else if let succeeded = state.lastLocalActionSucceeded {
-                        Image(systemName: succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundStyle(succeeded ? Color.green : Color.red)
+            let statusColor: Color = state.runningLocalActionID != nil
+                ? .accentColor
+                : (state.lastLocalActionSucceeded == false ? .red : .green)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 9) {
+                    ZStack {
+                        Circle()
+                            .fill(statusColor.opacity(0.14))
+                        if state.runningLocalActionID != nil {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else if let succeeded = state.lastLocalActionSucceeded {
+                            Image(systemName: succeeded ? "checkmark" : "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(statusColor)
+                        }
                     }
+                    .frame(width: 24, height: 24)
 
                     Text(state.localActionStatusMessage.isEmpty ? "项目操作" : state.localActionStatusMessage)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .semibold))
 
                     Spacer()
 
@@ -277,8 +421,7 @@ struct LocalActionsView: View {
                         Button("停止") {
                             state.cancelRunningLocalAction()
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .buttonStyle(LocalActionCompactButtonStyle(tint: .red))
                     }
                 }
 
@@ -289,22 +432,45 @@ struct LocalActionsView: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(height: 105)
-                    .padding(10)
-                    .background(.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 8))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(height: 108)
+                    .padding(11)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.black.opacity(0.88), Color.indigo.opacity(0.24)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(.white.opacity(0.09), lineWidth: 1)
+                    }
+                    .foregroundStyle(.white.opacity(0.92))
                 }
             }
-            .padding(12)
-            .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 11))
+            .padding(13)
+            .glassSurface(cornerRadius: 14, tint: statusColor.opacity(0.035), shadowEnabled: false)
         }
     }
 
     private func emptyState(icon: String, title: String, message: String) -> some View {
-        VStack(spacing: 9) {
-            Image(systemName: icon)
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
+        VStack(spacing: 11) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.accentColor.opacity(0.17), Color.purple.opacity(0.08)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image(systemName: icon)
+                    .font(.system(size: 25, weight: .medium))
+                    .foregroundStyle(Color.accentColor.opacity(0.8))
+            }
+            .frame(width: 54, height: 54)
+
             Text(title)
                 .font(.headline)
             Text(message)
@@ -313,7 +479,9 @@ struct LocalActionsView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
         }
+        .padding(26)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .glassSurface(cornerRadius: 18, tint: Color.accentColor.opacity(0.018), shadowEnabled: false)
     }
 
     private var emptyTitle: String {
@@ -338,6 +506,31 @@ struct LocalActionsView: View {
         case .discovered:
             return "CodexBar 只扫描当前项目的 Scripts、scripts、Tools 和 tools 目录。"
         }
+    }
+
+    private func scopeCount(_ item: LocalActionScope) -> Int {
+        state.localActions(scope: item, matching: "").count
+    }
+
+    private func actionAccent(_ action: LocalAction) -> Color {
+        if action.quickRunNeedsReview { return .orange }
+        if !action.published { return .gray }
+        if action.isCustomized { return .purple }
+        switch action.risk {
+        case .low: return .accentColor
+        case .medium: return .orange
+        case .high: return .red
+        }
+    }
+
+    private func actionIcon(_ action: LocalAction) -> String {
+        let value = action.title.lowercased()
+        if value.contains("构建") || value.contains("build") { return "hammer.fill" }
+        if value.contains("安装") || value.contains("更新") || value.contains("install") { return "arrow.down.app.fill" }
+        if value.contains("检查") || value.contains("check") { return "checkmark.shield.fill" }
+        if value.contains("重启") || value.contains("restart") { return "power" }
+        if value.contains("测试") || value.contains("test") { return "checkmark.circle.fill" }
+        return "bolt.fill"
     }
 
     private func requestRun(_ action: LocalAction) {
@@ -518,6 +711,8 @@ private struct LocalActionEditorSheet: View {
                 }
             }
             .font(.system(size: 12))
+            .padding(14)
+            .glassSurface(cornerRadius: 14, tint: Color.accentColor.opacity(0.018), shadowEnabled: false)
 
             HStack {
                 if existingCustomization != nil {
@@ -554,7 +749,8 @@ private struct LocalActionEditorSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 540)
+        .frame(width: 560)
+        .background(LocalActionsBackdrop())
         .onChange(of: risk) { newRisk in
             if newRisk != .low {
                 quickRun = false
@@ -572,5 +768,213 @@ private struct LocalActionEditorSheet: View {
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+}
+
+
+private struct LocalActionsBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.055),
+                    Color.clear,
+                    Color.indigo.opacity(0.035)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .fill(Color.accentColor.opacity(0.10))
+                .frame(width: 250, height: 250)
+                .blur(radius: 75)
+                .offset(x: -270, y: -220)
+
+            Circle()
+                .fill(Color.purple.opacity(0.075))
+                .frame(width: 230, height: 230)
+                .blur(radius: 78)
+                .offset(x: 310, y: 230)
+
+            Circle()
+                .fill(Color.cyan.opacity(0.055))
+                .frame(width: 190, height: 190)
+                .blur(radius: 70)
+                .offset(x: 220, y: -210)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
+private struct GlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let tint: Color
+    let shadowEnabled: Bool
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        shape.fill(tint)
+                    }
+            }
+            .overlay {
+                shape.stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.28),
+                            Color.white.opacity(0.07),
+                            Color.black.opacity(0.075)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+            }
+            .shadow(
+                color: shadowEnabled ? Color.black.opacity(0.10) : .clear,
+                radius: shadowEnabled ? 16 : 0,
+                y: shadowEnabled ? 7 : 0
+            )
+    }
+}
+
+private extension View {
+    func glassSurface(
+        cornerRadius: CGFloat,
+        tint: Color = .clear,
+        shadowEnabled: Bool = true
+    ) -> some View {
+        modifier(
+            GlassSurfaceModifier(
+                cornerRadius: cornerRadius,
+                tint: tint,
+                shadowEnabled: shadowEnabled
+            )
+        )
+    }
+}
+
+private struct LocalActionBadge: View {
+    let title: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.105), in: Capsule())
+            .overlay {
+                Capsule().stroke(color.opacity(0.14), lineWidth: 1)
+            }
+            .fixedSize()
+    }
+}
+
+private struct LocalActionToolbarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(Color.primary)
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.primary.opacity(0.09), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(configuration.isPressed ? 0.02 : 0.07), radius: 5, y: 2)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+    }
+}
+
+private struct LocalActionCompactButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(tint.opacity(configuration.isPressed ? 0.15 : 0.085), in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(tint.opacity(0.13), lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
+private struct LocalActionIconButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: 28, height: 28)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(tint.opacity(0.12), lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+    }
+}
+
+private struct LocalActionRunButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(
+                LinearGradient(
+                    colors: [tint, tint.opacity(0.76)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.white.opacity(0.16), lineWidth: 1)
+            }
+            .shadow(color: tint.opacity(configuration.isPressed ? 0.08 : 0.24), radius: 8, y: 3)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
+private extension LocalActionScope {
+    var systemImage: String {
+        switch self {
+        case .available: return "bolt.fill"
+        case .favorites: return "star.fill"
+        case .recent: return "clock.arrow.circlepath"
+        case .discovered: return "doc.text.magnifyingglass"
+        }
+    }
+}
+
+private extension LocalActionRisk {
+    var tintColor: Color {
+        switch self {
+        case .low: return .green
+        case .medium: return .orange
+        case .high: return .red
+        }
     }
 }
