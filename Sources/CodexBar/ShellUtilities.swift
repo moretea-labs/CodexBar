@@ -20,8 +20,10 @@ enum CodexBarError: LocalizedError {
     case codexNotFound
     case invalidWorkspace
     case emptyPrompt
+    case emptyCommand
     case processAlreadyRunning
     case processLaunchFailed(String)
+    case commandLaunchFailed(String)
     case terminalLaunchFailed(String)
     case hotKeyRegistrationFailed(OSStatus)
 
@@ -33,10 +35,14 @@ enum CodexBarError: LocalizedError {
             return "所选工作目录不存在，请重新添加。"
         case .emptyPrompt:
             return "后台执行需要先输入任务。"
+        case .emptyCommand:
+            return "请在 `>` 后输入要执行的命令。"
         case .processAlreadyRunning:
             return "已有任务正在执行。"
         case .processLaunchFailed(let message):
             return "Codex 启动失败：\(message)"
+        case .commandLaunchFailed(let message):
+            return "命令启动失败：\(message)"
         case .terminalLaunchFailed(let message):
             return "Terminal 启动失败：\(message)"
         case .hotKeyRegistrationFailed(let status):

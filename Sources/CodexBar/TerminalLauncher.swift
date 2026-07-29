@@ -26,8 +26,29 @@ enum TerminalLauncher {
             do script "\(ShellUtilities.appleScriptQuote(command))"
         end tell
         """
+        try execute(scriptSource)
+    }
 
-        guard let script = NSAppleScript(source: scriptSource) else {
+    static func launchCommand(command: String, workspacePath: String) throws {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw CodexBarError.emptyCommand }
+
+        let terminalCommand = [
+            "clear;",
+            "cd", ShellUtilities.shellQuote(workspacePath), "&&",
+            trimmed
+        ].joined(separator: " ")
+        let scriptSource = """
+        tell application "Terminal"
+            activate
+            do script "\(ShellUtilities.appleScriptQuote(terminalCommand))"
+        end tell
+        """
+        try execute(scriptSource)
+    }
+
+    private static func execute(_ source: String) throws {
+        guard let script = NSAppleScript(source: source) else {
             throw CodexBarError.terminalLaunchFailed("无法创建 AppleScript。")
         }
 

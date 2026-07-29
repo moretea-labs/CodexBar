@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 private final class LauncherPanel: NSPanel {
@@ -8,14 +9,20 @@ private final class LauncherPanel: NSPanel {
 
 @MainActor
 final class LauncherPanelController: NSWindowController, NSWindowDelegate {
-    private let panelSize = NSSize(width: 980, height: 620)
+    private let compactSize = NSSize(width: 760, height: 420)
+    private let expandedSize = NSSize(width: 980, height: 620)
     private let state: AppState
     private var hasPositionedWindow = false
+    private var cancellables = Set<AnyCancellable>()
+
+    private var targetSize: NSSize {
+        state.isExpanded ? expandedSize : compactSize
+    }
 
     init(state: AppState) {
         self.state = state
         let panel = LauncherPanel(
-            contentRect: NSRect(origin: .zero, size: panelSize),
+            contentRect: NSRect(origin: .zero, size: compactSize),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -57,6 +64,13 @@ final class LauncherPanelController: NSWindowController, NSWindowDelegate {
             hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
         ])
         panel.contentView = effectView
+
+        state.$isExpanded
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                self?.resizeWindowForCurrentMode()
+            }
+            .store(in: &cancellables)
     }
 
     required init?(coder: NSCoder) {
@@ -68,12 +82,14 @@ final class LauncherPanelController: NSWindowController, NSWindowDelegate {
         if window.isVisible {
             hide()
         } else {
+            state.showCompactLauncher()
             show()
         }
     }
 
     func show() {
         guard let window else { return }
+        resizeWindowForCurrentMode(animated: false)
         if !state.isPinned || !hasPositionedWindow {
             position(window)
             hasPositionedWindow = true
@@ -99,6 +115,21 @@ final class LauncherPanelController: NSWindowController, NSWindowDelegate {
         panel.orderOut(nil)
     }
 
+    private func resizeWindowForCurrentMode(animated: Bool? = nil) {
+        guard let window else { return }
+        let size = targetSize
+        let frame = window.frame
+        guard abs(frame.width - size.width) > 0.5 || abs(frame.height - size.height) > 0.5 else { return }
+
+        let newFrame = NSRect(
+            x: frame.midX - size.width / 2,
+            y: frame.maxY - size.height,
+            width: size.width,
+            height: size.height
+        )
+        window.setFrame(newFrame, display: true, animate: animated ?? window.isVisible)
+    }
+
     private func position(_ window: NSWindow) {
         let mouseLocation = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) })
@@ -106,8 +137,12 @@ final class LauncherPanelController: NSWindowController, NSWindowDelegate {
             ?? NSScreen.screens.first
         guard let visibleFrame = screen?.visibleFrame else { return }
 
-        let x = visibleFrame.midX - panelSize.width / 2
-        let y = visibleFrame.maxY - panelSize.height - min(90, visibleFrame.height * 0.12)
+        let size = targetSize
+        if window.frame.size != size {
+            window.setContentSize(size)
+        }
+        let x = visibleFrame.midX - size.width / 2
+        let y = visibleFrame.maxY - size.height - min(90, visibleFrame.height * 0.12)
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }

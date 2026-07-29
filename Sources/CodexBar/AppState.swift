@@ -43,9 +43,17 @@ final class AppState: ObservableObject {
     @Published var lastLocalActionSucceeded: Bool?
     @Published var isDiscoveringLocalActions = false
 
-    // Session-only UI state. Pinned mode intentionally resets to false on every launch.
+    @Published var shellCommandHistory: [ShellCommandRecord] = []
+    @Published var runningShellCommand: String?
+    @Published var lastShellCommand: String?
+    @Published var shellCommandOutput = ""
+    @Published var shellCommandStatusMessage = ""
+    @Published var lastShellCommandSucceeded: Bool?
+
+    // Session-only UI state. Pinned and expanded modes intentionally reset on every launch.
     @Published var navigation: AppSection = .compose
     @Published var isPinned = false
+    @Published var isExpanded = false
     @Published var prompt = ""
     @Published var backgroundTasks: [BackgroundTaskSession] = []
     @Published var selectedTaskID: UUID?
@@ -58,6 +66,8 @@ final class AppState: ObservableObject {
     private var runners: [UUID: CodexRunner] = [:]
     private var cancelledTaskIDs = Set<UUID>()
     private var localActionRunner: LocalActionRunner?
+    private var shellCommandRunner: ShellCommandRunner?
+    private var shellCommandWasCancelled = false
     private var localActionDiscoveryGeneration = 0
     private var isLoading = true
 
@@ -84,6 +94,7 @@ final class AppState: ObservableObject {
         localActionFavoriteIDs = Set(localActionState.favoriteIDs)
         localActionHistory = localActionState.history
         localActionCustomizations = localActionState.customizations
+        shellCommandHistory = ShellCommandPersistenceStore.load()
 
         if selectedWorkspace == nil {
             selectedWorkspaceID = workspaces.first?.id
@@ -141,6 +152,37 @@ final class AppState: ObservableObject {
     var runningLocalAction: LocalAction? {
         guard let runningLocalActionID else { return nil }
         return localActions.first(where: { $0.id == runningLocalActionID })
+    }
+
+    var isShellCommandInput: Bool {
+        prompt.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(">")
+    }
+
+    var parsedShellCommand: String? {
+        ShellCommandPolicy.command(from: prompt)
+    }
+
+    var shellCommandAssessment: ShellCommandAssessment? {
+        guard let command = parsedShellCommand, !command.isEmpty else { return nil }
+        return ShellCommandPolicy.assess(command)
+    }
+
+    var recentShellCommands: [ShellCommandRecord] {
+        let workspacePath = selectedWorkspace?.path
+        var seen = Set<String>()
+        return shellCommandHistory.filter { record in
+            guard record.workspacePath == workspacePath else { return false }
+            return seen.insert(record.command).inserted
+        }
+    }
+
+    var canSubmitLauncherInput: Bool {
+        if let command = parsedShellCommand {
+            return selectedWorkspace != nil
+                && !command.isEmpty
+                && runningShellCommand == nil
+        }
+        return canRun
     }
 
     var canRun: Bool {
@@ -223,13 +265,29 @@ final class AppState: ObservableObject {
         detectCodex()
     }
 
-    func selectSection(_ section: AppSection) {
+    func showCompactLauncher() {
+        navigation = .compose
+        isExpanded = false
+        NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
+    }
+
+    func showExpanded(_ section: AppSection = .compose) {
         navigation = section
-        if section == .compose {
-            NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
-        } else if section == .actions {
+        isExpanded = true
+        if section == .actions {
             refreshLocalActions()
         }
+        if section == .compose {
+            NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
+        }
+    }
+
+    func collapseLauncher() {
+        showCompactLauncher()
+    }
+
+    func selectSection(_ section: AppSection) {
+        showExpanded(section)
     }
 
     func refreshLocalActions() {
@@ -401,6 +459,103 @@ final class AppState: ObservableObject {
         history.removeAll()
     }
 
+    func runShellCommand(_ command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            shellCommandStatusMessage = CodexBarError.emptyCommand.localizedDescription
+            lastShellCommandSucceeded = false
+            return
+        }
+        guard ShellCommandPolicy.assess(trimmed).risk != .terminalOnly else {
+            shellCommandStatusMessage = "该命令只能在 Terminal 中执行。"
+            lastShellCommandSucceeded = false
+            return
+        }
+        guard runningShellCommand == nil else {
+            shellCommandStatusMessage = "已有本地命令正在执行。"
+            return
+        }
+        guard let workspace = selectedWorkspace,
+              FileManager.default.fileExists(atPath: workspace.path) else {
+            shellCommandStatusMessage = CodexBarError.invalidWorkspace.localizedDescription
+            lastShellCommandSucceeded = false
+            return
+        }
+
+        let runner = ShellCommandRunner()
+        let startedAt = Date()
+        shellCommandRunner = runner
+        shellCommandWasCancelled = false
+        runningShellCommand = trimmed
+        lastShellCommand = trimmed
+        shellCommandOutput = ""
+        shellCommandStatusMessage = "正在执行命令…"
+        lastShellCommandSucceeded = nil
+
+        do {
+            try runner.start(
+                command: trimmed,
+                workspacePath: workspace.path,
+                onOutput: { [weak self] chunk in
+                    self?.appendShellCommandOutput(chunk)
+                },
+                onCompletion: { [weak self] result in
+                    self?.finishShellCommand(
+                        trimmed,
+                        workspace: workspace,
+                        startedAt: startedAt,
+                        result: result
+                    )
+                }
+            )
+            prompt = ""
+        } catch {
+            shellCommandRunner = nil
+            runningShellCommand = nil
+            shellCommandStatusMessage = error.localizedDescription
+            lastShellCommandSucceeded = false
+        }
+    }
+
+    func cancelRunningShellCommand() {
+        guard runningShellCommand != nil else { return }
+        shellCommandWasCancelled = true
+        shellCommandStatusMessage = "正在停止命令…"
+        shellCommandRunner?.cancel()
+    }
+
+    func openShellCommandInTerminal(_ command: String) {
+        guard let workspace = selectedWorkspace,
+              FileManager.default.fileExists(atPath: workspace.path) else {
+            shellCommandStatusMessage = CodexBarError.invalidWorkspace.localizedDescription
+            lastShellCommandSucceeded = false
+            return
+        }
+        do {
+            try TerminalLauncher.launchCommand(command: command, workspacePath: workspace.path)
+            lastShellCommand = command
+            shellCommandStatusMessage = "已在 Terminal 中打开命令。"
+            lastShellCommandSucceeded = true
+            prompt = ""
+        } catch {
+            shellCommandStatusMessage = error.localizedDescription
+            lastShellCommandSucceeded = false
+        }
+    }
+
+    func reuseShellCommand(_ command: String) {
+        prompt = "> " + command
+        showCompactLauncher()
+    }
+
+    func clearShellCommandResult() {
+        guard runningShellCommand == nil else { return }
+        shellCommandOutput = ""
+        shellCommandStatusMessage = ""
+        lastShellCommand = nil
+        lastShellCommandSucceeded = nil
+    }
+
     func runCurrentTask() {
         statusMessage = ""
         lastRunSucceeded = nil
@@ -477,6 +632,7 @@ final class AppState: ObservableObject {
             cancelTask(id: task.id)
         }
         cancelRunningLocalAction()
+        cancelRunningShellCommand()
     }
 
     func removeTask(id: UUID) {
@@ -750,6 +906,54 @@ final class AppState: ObservableObject {
     private func refreshLocalActionsIfReady() {
         guard !isLoading else { return }
         refreshLocalActions()
+    }
+
+    private func appendShellCommandOutput(_ chunk: String) {
+        shellCommandOutput.append(chunk)
+        if shellCommandOutput.count > 120_000 {
+            shellCommandOutput = String(shellCommandOutput.suffix(100_000))
+        }
+    }
+
+    private func finishShellCommand(
+        _ command: String,
+        workspace: Workspace,
+        startedAt: Date,
+        result: Result<Int32, Error>
+    ) {
+        shellCommandRunner = nil
+        runningShellCommand = nil
+        let finishedAt = Date()
+
+        switch result {
+        case .success(let exitCode):
+            let record = ShellCommandRecord(
+                command: command,
+                workspaceName: workspace.name,
+                workspacePath: workspace.path,
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                exitCode: exitCode,
+                outputTail: String(shellCommandOutput.suffix(20_000))
+            )
+            shellCommandHistory.insert(record, at: 0)
+            shellCommandHistory = Array(shellCommandHistory.prefix(100))
+            ShellCommandPersistenceStore.save(shellCommandHistory)
+
+            if shellCommandWasCancelled {
+                lastShellCommandSucceeded = false
+                shellCommandStatusMessage = "命令已停止。"
+            } else {
+                lastShellCommandSucceeded = exitCode == 0
+                shellCommandStatusMessage = exitCode == 0
+                    ? "命令执行成功。"
+                    : "命令执行失败，状态码：\(exitCode)"
+            }
+        case .failure(let error):
+            lastShellCommandSucceeded = false
+            shellCommandStatusMessage = error.localizedDescription
+        }
+        shellCommandWasCancelled = false
     }
 
     private func appendLocalActionOutput(_ chunk: String) {

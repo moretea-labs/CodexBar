@@ -6,10 +6,32 @@ struct LauncherView: View {
     @ObservedObject var state: AppState
     let onClose: () -> Void
     @State private var showsSettings = false
+    @State private var pendingShellCommand: ShellCommandAssessment?
 
     private let sidebarWidth: CGFloat = 220
 
     var body: some View {
+        Group {
+            if state.isExpanded {
+                expandedLauncher
+            } else {
+                compactLauncher
+            }
+        }
+        .frame(
+            width: state.isExpanded ? 980 : 760,
+            height: state.isExpanded ? 620 : 420
+        )
+        .sheet(isPresented: $showsSettings) {
+            SettingsView(state: state)
+        }
+        .alert(item: $pendingShellCommand) { assessment in
+            commandConfirmationAlert(for: assessment)
+        }
+        .onExitCommand(perform: onClose)
+    }
+
+    private var expandedLauncher: some View {
         ZStack {
             LauncherVisualBackdrop()
 
@@ -23,11 +45,301 @@ struct LauncherView: View {
             }
             .background(.ultraThinMaterial)
         }
-        .frame(width: 980, height: 620)
-        .sheet(isPresented: $showsSettings) {
-            SettingsView(state: state)
+    }
+
+    private var compactLauncher: some View {
+        ZStack {
+            LauncherVisualBackdrop()
+
+            VStack(spacing: 0) {
+                compactHeader
+                Rectangle()
+                    .fill(.primary.opacity(0.07))
+                    .frame(height: 1)
+
+                VStack(spacing: 13) {
+                    compactInputCard
+
+                    if state.runningShellCommand != nil
+                        || !state.shellCommandOutput.isEmpty
+                        || !state.shellCommandStatusMessage.isEmpty {
+                        shellCommandResultCard(expanded: false)
+                    } else {
+                        compactSuggestions
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 15)
+                .frame(maxHeight: .infinity, alignment: .top)
+
+                compactFooter
+            }
+            .background(.ultraThinMaterial)
         }
-        .onExitCommand(perform: onClose)
+    }
+
+    private var compactHeader: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(
+                    LinearGradient(
+                        colors: [Color.accentColor, Color.blue.opacity(0.82)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+                .shadow(color: Color.accentColor.opacity(0.22), radius: 8, y: 3)
+
+            Menu {
+                ForEach(state.workspaces) { workspace in
+                    Button {
+                        state.selectedWorkspaceID = workspace.id
+                        NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
+                    } label: {
+                        Label(
+                            workspace.name,
+                            systemImage: workspace.id == state.selectedWorkspace?.id ? "checkmark" : "folder"
+                        )
+                    }
+                }
+                Divider()
+                Button("添加工作目录…", action: state.addWorkspace)
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(state.selectedWorkspace?.name ?? "选择工作目录")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .lineLimit(1)
+                        Text(state.selectedWorkspace?.path ?? "命令和任务将在所选项目中运行")
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Spacer()
+
+            if state.runningTaskCount > 0 {
+                Button {
+                    state.showExpanded(.tasks)
+                } label: {
+                    Label("\(state.runningTaskCount) 个任务", systemImage: "circle.dotted")
+                }
+                .buttonStyle(CompactGlassButtonStyle(tint: .accentColor))
+            }
+
+            Button {
+                state.showExpanded(.compose)
+            } label: {
+                Label("展开", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(CompactGlassButtonStyle(tint: .secondary))
+            .help("打开完整工作台")
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 58)
+    }
+
+    private var compactInputCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 11) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(inputAccent.opacity(0.12))
+                    Image(systemName: state.isShellCommandInput ? "terminal.fill" : "sparkles")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(inputAccent)
+                }
+                .frame(width: 34, height: 34)
+
+                ZStack(alignment: .topLeading) {
+                    PromptTextView(
+                        text: $state.prompt,
+                        onSubmit: submitLauncherInput,
+                        onCancel: onClose
+                    )
+                    .frame(height: 54)
+
+                    if state.prompt.isEmpty {
+                        Text("输入开发任务；使用 > 快速执行本地命令")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 7)
+                            .padding(.top, 10)
+                            .allowsHitTesting(false)
+                    }
+                }
+
+                Button(action: submitLauncherInput) {
+                    HStack(spacing: 6) {
+                        Image(systemName: submitSystemImage)
+                        Text(submitTitle)
+                    }
+                }
+                .buttonStyle(CompactPrimaryButtonStyle(tint: inputAccent))
+                .disabled(!state.canSubmitLauncherInput)
+            }
+
+            HStack(spacing: 8) {
+                Label(
+                    state.isShellCommandInput ? "本地命令" : "Codex 任务",
+                    systemImage: state.isShellCommandInput ? "terminal" : "bolt.fill"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(inputAccent)
+
+                Text("·")
+                    .foregroundStyle(.tertiary)
+
+                if let assessment = state.shellCommandAssessment {
+                    Label(assessment.risk.title, systemImage: assessment.risk.systemImage)
+                        .font(.caption)
+                        .foregroundStyle(commandRiskColor(assessment.risk))
+                    Text(assessment.reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if state.isShellCommandInput {
+                    Text("在 > 后输入命令")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(state.executionMode == .background ? "后台执行" : "在 Terminal 中打开 Codex")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text("Enter 执行")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(13)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(inputAccent.opacity(state.isShellCommandInput ? 0.20 : 0.10), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.07), radius: 13, y: 5)
+    }
+
+    private var compactSuggestions: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 8) {
+                Button {
+                    state.prompt = "> "
+                    NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
+                } label: {
+                    Label("运行本地命令", systemImage: "terminal")
+                }
+                .buttonStyle(CompactSuggestionButtonStyle(tint: .cyan))
+
+                Button {
+                    state.showExpanded(.actions)
+                } label: {
+                    Label("项目操作", systemImage: "bolt.square")
+                }
+                .buttonStyle(CompactSuggestionButtonStyle(tint: .blue))
+
+                Button {
+                    state.showExpanded(.compose)
+                } label: {
+                    Label("完整工作台", systemImage: "rectangle.split.2x1")
+                }
+                .buttonStyle(CompactSuggestionButtonStyle(tint: .secondary))
+
+                Spacer()
+            }
+
+            if !state.recentShellCommands.isEmpty {
+                Text("最近命令")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                VStack(spacing: 6) {
+                    ForEach(Array(state.recentShellCommands.prefix(3))) { record in
+                        Button {
+                            state.reuseShellCommand(record.command)
+                        } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: record.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .foregroundStyle(record.succeeded ? Color.green : Color.red)
+                                Text(record.command)
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                                Text(record.succeeded ? "成功" : "失败")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "arrow.up.left")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 11)
+                            .frame(height: 34)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 9)
+                                    .stroke(.primary.opacity(0.06), lineWidth: 1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "greaterthan.square")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(Color.cyan.opacity(0.82))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("命令模式从 > 开始")
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Text("例如：> git status、> mvn test、> docker compose ps")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
+            }
+        }
+    }
+
+    private var compactFooter: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(state.selectedWorkspace == nil ? Color.orange : Color.green)
+                .frame(width: 6, height: 6)
+            Text(state.selectedWorkspace == nil ? "请选择工作目录" : "当前项目已就绪")
+            Spacer()
+            Text("> 命令")
+            Text("·")
+            Text("Esc 关闭")
+            Text("·")
+            Text(state.hotKeyPreset.title)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 18)
+        .frame(height: 34)
+        .background(.thinMaterial)
     }
 
     private var sidebar: some View {
@@ -57,6 +369,18 @@ struct LauncherView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+
+                Spacer()
+
+                Button {
+                    state.collapseLauncher()
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .frame(width: 26, height: 26)
+                        .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .help("收起为快捷启动栏")
             }
             .padding(.horizontal, 14)
             .padding(.top, 14)
@@ -274,15 +598,13 @@ struct LauncherView: View {
             ZStack(alignment: .topLeading) {
                 PromptTextView(
                     text: $state.prompt,
-                    onSubmit: state.runCurrentTask,
+                    onSubmit: submitLauncherInput,
                     onCancel: onClose
                 )
                 .frame(minHeight: 88, maxHeight: 112)
 
                 if state.prompt.isEmpty {
-                    Text(state.executionMode == .background
-                         ? "描述任务；提交后可立即继续输入并启动另一个任务"
-                         : "可输入初始任务；留空则直接打开 Codex 交互会话")
+                    Text("描述 Codex 任务；使用 > 快速执行当前项目中的本地命令")
                         .font(.system(size: 16))
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 8)
@@ -292,10 +614,13 @@ struct LauncherView: View {
             }
 
             HStack {
-                Label(state.executionMode.explanation, systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Label(
+                    state.shellCommandAssessment?.reason ?? state.executionMode.explanation,
+                    systemImage: state.isShellCommandInput ? "terminal" : "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(state.shellCommandAssessment.map { commandRiskColor($0.risk) } ?? Color.secondary)
+                .lineLimit(1)
 
                 Spacer()
 
@@ -309,16 +634,16 @@ struct LauncherView: View {
                     .font(.caption)
                 }
 
-                Button(action: state.runCurrentTask) {
+                Button(action: submitLauncherInput) {
                     HStack(spacing: 7) {
-                        Text(state.executionMode == .background ? "执行任务" : "打开 Codex")
+                        Text(submitTitle)
                         Text("↩")
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!state.canRun)
+                .disabled(!state.canSubmitLauncherInput)
             }
         }
         .padding(.horizontal, 18)
@@ -327,7 +652,12 @@ struct LauncherView: View {
 
     @ViewBuilder
     private var selectedTaskPreview: some View {
-        if let task = state.selectedTask {
+        if state.runningShellCommand != nil
+            || !state.shellCommandOutput.isEmpty
+            || !state.shellCommandStatusMessage.isEmpty {
+            shellCommandResultCard(expanded: true)
+                .padding(18)
+        } else if let task = state.selectedTask {
             taskOutputPanel(task: task, compact: true)
         } else {
             emptyTaskState
@@ -663,6 +993,177 @@ struct LauncherView: View {
         case .succeeded: return "任务已完成，但没有产生文本输出。"
         case .failed: return "任务执行失败。"
         case .cancelled: return "任务已停止。"
+        }
+    }
+
+    private var inputAccent: Color {
+        state.isShellCommandInput ? .cyan : .accentColor
+    }
+
+    private var submitTitle: String {
+        if let assessment = state.shellCommandAssessment {
+            switch assessment.risk {
+            case .low: return "执行命令"
+            case .confirm: return "确认命令"
+            case .terminalOnly: return "打开 Terminal"
+            }
+        }
+        return state.executionMode == .background ? "执行任务" : "打开 Codex"
+    }
+
+    private var submitSystemImage: String {
+        if let assessment = state.shellCommandAssessment {
+            return assessment.risk == .terminalOnly ? "terminal.fill" : "play.fill"
+        }
+        return state.executionMode == .background ? "bolt.fill" : "terminal.fill"
+    }
+
+    private func submitLauncherInput() {
+        guard let command = state.parsedShellCommand else {
+            state.runCurrentTask()
+            return
+        }
+        guard !command.isEmpty else { return }
+        requestShellCommand(command)
+    }
+
+    private func requestShellCommand(_ command: String) {
+        let assessment = ShellCommandPolicy.assess(command)
+        switch assessment.risk {
+        case .low:
+            state.runShellCommand(command)
+        case .confirm, .terminalOnly:
+            pendingShellCommand = assessment
+        }
+    }
+
+    private func commandConfirmationAlert(for assessment: ShellCommandAssessment) -> Alert {
+        let directory = state.selectedWorkspace?.path ?? "未选择工作目录"
+        let message = "\(assessment.reason)\n\n执行目录：\n\(directory)\n\n命令：\n\(assessment.command)"
+        if assessment.risk == .terminalOnly {
+            return Alert(
+                title: Text("此命令仅允许在 Terminal 中执行"),
+                message: Text(message),
+                primaryButton: .default(Text("打开 Terminal")) {
+                    state.openShellCommandInTerminal(assessment.command)
+                },
+                secondaryButton: .cancel()
+            )
+        }
+        return Alert(
+            title: Text("确认执行本地命令"),
+            message: Text(message),
+            primaryButton: .default(Text("执行")) {
+                state.runShellCommand(assessment.command)
+            },
+            secondaryButton: .cancel()
+        )
+    }
+
+    private func commandRiskColor(_ risk: ShellCommandRisk) -> Color {
+        switch risk {
+        case .low: return .green
+        case .confirm: return .orange
+        case .terminalOnly: return .red
+        }
+    }
+
+    @ViewBuilder
+    private func shellCommandResultCard(expanded: Bool) -> some View {
+        let statusColor: Color = state.runningShellCommand != nil
+            ? .cyan
+            : (state.lastShellCommandSucceeded == false ? .red : .green)
+        let command = state.runningShellCommand ?? state.lastShellCommand
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 9) {
+                ZStack {
+                    Circle().fill(statusColor.opacity(0.13))
+                    if state.runningShellCommand != nil {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: state.lastShellCommandSucceeded == false ? "xmark" : "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(statusColor)
+                    }
+                }
+                .frame(width: 23, height: 23)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(state.shellCommandStatusMessage.isEmpty ? "本地命令" : state.shellCommandStatusMessage)
+                        .font(.system(size: 12.5, weight: .semibold))
+                    if let command {
+                        Text(command)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                if state.runningShellCommand != nil {
+                    Button("停止", action: state.cancelRunningShellCommand)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                } else if let command {
+                    Button {
+                        requestShellCommand(command)
+                    } label: {
+                        Label("重试", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button {
+                        state.openShellCommandInTerminal(command)
+                    } label: {
+                        Label("Terminal", systemImage: "terminal")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                if !state.shellCommandOutput.isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(state.shellCommandOutput, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.plain)
+                    .help("复制输出")
+                }
+
+                if state.runningShellCommand == nil {
+                    Button {
+                        state.clearShellCommandResult()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭结果")
+                }
+            }
+
+            if !state.shellCommandOutput.isEmpty {
+                ScrollView {
+                    Text(state.shellCommandOutput)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: expanded ? 190 : 126)
+                .padding(10)
+                .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 9))
+                .foregroundStyle(.white.opacity(0.92))
+            }
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(statusColor.opacity(0.13), lineWidth: 1)
         }
     }
 
@@ -1278,5 +1779,68 @@ private struct LauncherVisualBackdrop: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+}
+
+
+private struct CompactGlassButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(tint.opacity(0.13), lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
+private struct CompactPrimaryButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(
+                LinearGradient(
+                    colors: [tint, tint.opacity(0.74)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(.white.opacity(0.14), lineWidth: 1)
+            }
+            .shadow(color: tint.opacity(configuration.isPressed ? 0.08 : 0.20), radius: 7, y: 3)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
+private struct CompactSuggestionButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 11)
+            .frame(height: 31)
+            .background(tint.opacity(configuration.isPressed ? 0.14 : 0.075), in: RoundedRectangle(cornerRadius: 9))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(tint.opacity(0.12), lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
     }
 }

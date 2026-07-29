@@ -132,17 +132,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showPanel() {
-        state.navigation = .compose
+        state.showCompactLauncher()
         panelController?.show()
     }
 
     @objc private func showActions() {
-        state.selectSection(.actions)
+        state.showExpanded(.actions)
         panelController?.show()
     }
 
     @objc private func showHistory() {
-        state.navigation = .history
+        state.showExpanded(.history)
         panelController?.show()
     }
 
@@ -156,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showTaskCenter() {
-        state.navigation = .tasks
+        state.showExpanded(.tasks)
         panelController?.show()
     }
 
