@@ -7,8 +7,10 @@ struct LauncherView: View {
     let onClose: () -> Void
     @State private var showsSettings = false
     @State private var pendingShellCommand: ShellCommandAssessment?
+    @FocusState private var compactInputFocused: Bool
 
     private let sidebarWidth: CGFloat = 220
+    private let launcherCornerRadius: CGFloat = 22
 
     var body: some View {
         Group {
@@ -20,8 +22,10 @@ struct LauncherView: View {
         }
         .frame(
             width: state.isExpanded ? 980 : 760,
-            height: state.isExpanded ? 620 : 420
+            height: state.isExpanded ? 620 : 440
         )
+        .clipShape(RoundedRectangle(cornerRadius: launcherCornerRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: launcherCornerRadius, style: .continuous))
         .sheet(isPresented: $showsSettings) {
             SettingsView(state: state)
         }
@@ -57,22 +61,26 @@ struct LauncherView: View {
                     .fill(.primary.opacity(0.07))
                     .frame(height: 1)
 
-                VStack(spacing: 13) {
-                    compactInputCard
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 12) {
+                        compactInputCard
 
-                    if state.runningShellCommand != nil
-                        || !state.shellCommandOutput.isEmpty
-                        || !state.shellCommandStatusMessage.isEmpty {
-                        shellCommandResultCard(expanded: false)
-                    } else {
-                        compactSuggestions
+                        if state.runningShellCommand != nil
+                            || !state.shellCommandOutput.isEmpty
+                            || !state.shellCommandStatusMessage.isEmpty {
+                            shellCommandResultCard(expanded: false)
+                        } else {
+                            compactSuggestions
+                        }
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 15)
-                .frame(maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 compactFooter
+                    .layoutPriority(1)
             }
             .background(.ultraThinMaterial)
         }
@@ -155,7 +163,7 @@ struct LauncherView: View {
 
     private var compactInputCard: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .center, spacing: 11) {
+            HStack(alignment: .center, spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(inputAccent.opacity(0.12))
@@ -165,23 +173,22 @@ struct LauncherView: View {
                 }
                 .frame(width: 34, height: 34)
 
-                ZStack(alignment: .topLeading) {
-                    PromptTextView(
-                        text: $state.prompt,
-                        onSubmit: submitLauncherInput,
-                        onCancel: onClose
-                    )
-                    .frame(height: 54)
-
-                    if state.prompt.isEmpty {
-                        Text("输入开发任务；使用 > 快速执行本地命令")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, 7)
-                            .padding(.top, 10)
-                            .allowsHitTesting(false)
+                TextField("输入开发任务；使用 > 快速执行本地命令", text: $state.prompt)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15.5, weight: .regular))
+                    .focused($compactInputFocused)
+                    .onSubmit(submitLauncherInput)
+                    .onReceive(NotificationCenter.default.publisher(for: .codexBarFocusPrompt)) { _ in
+                        if !state.isExpanded {
+                            compactInputFocused = true
+                        }
                     }
-                }
+                    .onAppear {
+                        DispatchQueue.main.async {
+                            compactInputFocused = true
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 36)
 
                 Button(action: submitLauncherInput) {
                     HStack(spacing: 6) {
@@ -229,13 +236,13 @@ struct LauncherView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(13)
+        .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
                 .stroke(inputAccent.opacity(state.isShellCommandInput ? 0.20 : 0.10), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.07), radius: 13, y: 5)
+        .shadow(color: .black.opacity(0.055), radius: 10, y: 4)
     }
 
     private var compactSuggestions: some View {
@@ -340,6 +347,11 @@ struct LauncherView: View {
         .padding(.horizontal, 18)
         .frame(height: 34)
         .background(.thinMaterial)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(.primary.opacity(0.055))
+                .frame(height: 1)
+        }
     }
 
     private var sidebar: some View {
@@ -1075,8 +1087,8 @@ struct LauncherView: View {
             : (state.lastShellCommandSucceeded == false ? .red : .green)
         let command = state.runningShellCommand ?? state.lastShellCommand
 
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 9) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 ZStack {
                     Circle().fill(statusColor.opacity(0.13))
                     if state.runningShellCommand != nil {
@@ -1087,7 +1099,7 @@ struct LauncherView: View {
                             .foregroundStyle(statusColor)
                     }
                 }
-                .frame(width: 23, height: 23)
+                .frame(width: 22, height: 22)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(state.shellCommandStatusMessage.isEmpty ? "本地命令" : state.shellCommandStatusMessage)
@@ -1103,25 +1115,27 @@ struct LauncherView: View {
                 Spacer()
 
                 if state.runningShellCommand != nil {
-                    Button("停止", action: state.cancelRunningShellCommand)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                    Button(action: state.cancelRunningShellCommand) {
+                        Image(systemName: "stop.fill")
+                    }
+                    .buttonStyle(CompactCommandActionButtonStyle(tint: .red))
+                    .help("停止命令")
                 } else if let command {
                     Button {
                         requestShellCommand(command)
                     } label: {
-                        Label("重试", systemImage: "arrow.clockwise")
+                        Image(systemName: "arrow.clockwise")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(CompactCommandActionButtonStyle(tint: .secondary))
+                    .help("重新执行")
 
                     Button {
                         state.openShellCommandInTerminal(command)
                     } label: {
-                        Label("Terminal", systemImage: "terminal")
+                        Image(systemName: "terminal")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(CompactCommandActionButtonStyle(tint: .secondary))
+                    .help("在 Terminal 中运行")
                 }
 
                 if !state.shellCommandOutput.isEmpty {
@@ -1131,7 +1145,7 @@ struct LauncherView: View {
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CompactCommandActionButtonStyle(tint: .secondary))
                     .help("复制输出")
                 }
 
@@ -1139,9 +1153,9 @@ struct LauncherView: View {
                     Button {
                         state.clearShellCommandResult()
                     } label: {
-                        Image(systemName: "xmark.circle")
+                        Image(systemName: "xmark")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CompactCommandActionButtonStyle(tint: .secondary))
                     .help("关闭结果")
                 }
             }
@@ -1153,16 +1167,16 @@ struct LauncherView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(height: expanded ? 190 : 126)
+                .frame(height: expanded ? 190 : 98)
                 .padding(10)
-                .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 9))
+                .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .foregroundStyle(.white.opacity(0.92))
             }
         }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .padding(expanded ? 12 : 11)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(statusColor.opacity(0.13), lineWidth: 1)
         }
     }
@@ -1803,16 +1817,19 @@ private struct CompactGlassButtonStyle: ButtonStyle {
 
 private struct CompactPrimaryButtonStyle: ButtonStyle {
     let tint: Color
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(isEnabled ? Color.white : Color.secondary)
             .padding(.horizontal, 12)
-            .frame(height: 32)
+            .frame(height: 31)
             .background(
                 LinearGradient(
-                    colors: [tint, tint.opacity(0.74)],
+                    colors: isEnabled
+                        ? [tint.opacity(0.94), tint.opacity(0.76)]
+                        : [Color.primary.opacity(0.055), Color.primary.opacity(0.035)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ),
@@ -1820,10 +1837,35 @@ private struct CompactPrimaryButtonStyle: ButtonStyle {
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(.white.opacity(0.14), lineWidth: 1)
+                    .stroke(isEnabled ? Color.white.opacity(0.12) : Color.primary.opacity(0.06), lineWidth: 1)
             }
-            .shadow(color: tint.opacity(configuration.isPressed ? 0.08 : 0.20), radius: 7, y: 3)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .shadow(
+                color: isEnabled ? tint.opacity(configuration.isPressed ? 0.05 : 0.13) : .clear,
+                radius: 5,
+                y: 2
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(isEnabled ? 1 : 0.82)
+    }
+}
+
+private struct CompactCommandActionButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: 28, height: 28)
+            .background(
+                tint.opacity(configuration.isPressed ? 0.12 : 0.055),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(tint.opacity(0.08), lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
     }
 }
 

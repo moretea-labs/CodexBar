@@ -9,8 +9,9 @@ private final class LauncherPanel: NSPanel {
 
 @MainActor
 final class LauncherPanelController: NSWindowController, NSWindowDelegate {
-    private let compactSize = NSSize(width: 760, height: 420)
+    private let compactSize = NSSize(width: 760, height: 440)
     private let expandedSize = NSSize(width: 980, height: 620)
+    private let panelCornerRadius: CGFloat = 22
     private let state: AppState
     private var hasPositionedWindow = false
     private var cancellables = Set<AnyCancellable>()
@@ -51,7 +52,8 @@ final class LauncherPanelController: NSWindowController, NSWindowDelegate {
         effectView.blendingMode = .behindWindow
         effectView.state = .active
         effectView.wantsLayer = true
-        effectView.layer?.cornerRadius = 18
+        effectView.layer?.cornerRadius = panelCornerRadius
+        effectView.layer?.cornerCurve = .continuous
         effectView.layer?.masksToBounds = true
         effectView.layer?.borderWidth = 0.5
         effectView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
