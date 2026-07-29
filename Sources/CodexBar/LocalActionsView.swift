@@ -49,7 +49,7 @@ struct LocalActionsView: View {
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [Color.accentColor, Color.indigo.opacity(0.88)],
+                            colors: [Color.accentColor, Color.blue.opacity(0.82)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -291,7 +291,7 @@ struct LocalActionsView: View {
                     }
 
                     if action.isCustomized {
-                        LocalActionBadge(title: "已整理", systemImage: "checkmark.seal.fill", color: .purple)
+                        LocalActionBadge(title: "已整理", systemImage: "checkmark.seal.fill", color: .teal)
                     }
 
                     if action.isQuickRunnable {
@@ -340,7 +340,7 @@ struct LocalActionsView: View {
                     systemImage: action.isCustomized ? "slider.horizontal.3" : "wand.and.stars"
                 )
             }
-            .buttonStyle(LocalActionCompactButtonStyle(tint: action.isCustomized ? .purple : .gray))
+            .buttonStyle(LocalActionCompactButtonStyle(tint: action.isCustomized ? .teal : .gray))
             .help(action.isCustomized ? "编辑操作说明" : "整理为操作")
 
             Button {
@@ -436,7 +436,7 @@ struct LocalActionsView: View {
                     .padding(11)
                     .background(
                         LinearGradient(
-                            colors: [Color.black.opacity(0.88), Color.indigo.opacity(0.24)],
+                            colors: [Color.black.opacity(0.88), Color.blue.opacity(0.18)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
@@ -460,7 +460,7 @@ struct LocalActionsView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [Color.accentColor.opacity(0.17), Color.purple.opacity(0.08)],
+                            colors: [Color.accentColor.opacity(0.15), Color.cyan.opacity(0.055)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -515,7 +515,7 @@ struct LocalActionsView: View {
     private func actionAccent(_ action: LocalAction) -> Color {
         if action.quickRunNeedsReview { return .orange }
         if !action.published { return .gray }
-        if action.isCustomized { return .purple }
+        if action.isCustomized { return .teal }
         switch action.risk {
         case .low: return .accentColor
         case .medium: return .orange
@@ -779,7 +779,7 @@ private struct LocalActionsBackdrop: View {
                 colors: [
                     Color.accentColor.opacity(0.055),
                     Color.clear,
-                    Color.indigo.opacity(0.035)
+                    Color.cyan.opacity(0.028)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -792,7 +792,7 @@ private struct LocalActionsBackdrop: View {
                 .offset(x: -270, y: -220)
 
             Circle()
-                .fill(Color.purple.opacity(0.075))
+                .fill(Color.blue.opacity(0.05))
                 .frame(width: 230, height: 230)
                 .blur(radius: 78)
                 .offset(x: 310, y: 230)

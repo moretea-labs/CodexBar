@@ -39,7 +39,7 @@ struct LauncherView: View {
                     .frame(width: 32, height: 32)
                     .background(
                         LinearGradient(
-                            colors: [Color.accentColor, Color.indigo.opacity(0.88)],
+                            colors: [Color.accentColor, Color.blue.opacity(0.82)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
@@ -1252,7 +1252,7 @@ private struct LauncherVisualBackdrop: View {
                 colors: [
                     Color.accentColor.opacity(0.075),
                     Color.clear,
-                    Color.indigo.opacity(0.045)
+                    Color.cyan.opacity(0.032)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -1265,7 +1265,7 @@ private struct LauncherVisualBackdrop: View {
                 .offset(x: -360, y: -270)
 
             Circle()
-                .fill(Color.purple.opacity(0.09))
+                .fill(Color.blue.opacity(0.06))
                 .frame(width: 280, height: 280)
                 .blur(radius: 100)
                 .offset(x: 390, y: 270)
