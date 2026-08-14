@@ -7,7 +7,6 @@ struct LauncherView: View {
     let onClose: () -> Void
     @State private var showsSettings = false
     @State private var pendingShellCommand: ShellCommandAssessment?
-    @FocusState private var compactInputFocused: Bool
 
     private let sidebarWidth: CGFloat = 220
     private let launcherCornerRadius: CGFloat = 22
@@ -39,13 +38,23 @@ struct LauncherView: View {
         ZStack {
             LauncherVisualBackdrop()
 
-            HStack(spacing: 0) {
-                sidebar
-                    .frame(width: sidebarWidth)
+            VStack(spacing: 0) {
+                unifiedToolbar
                 Rectangle()
                     .fill(.primary.opacity(0.075))
-                    .frame(width: 1)
-                mainContent
+                    .frame(height: 1)
+                HStack(spacing: 0) {
+                    sidebar
+                        .frame(width: sidebarWidth)
+                    Rectangle()
+                        .fill(.primary.opacity(0.075))
+                        .frame(width: 1)
+                    mainContent
+                }
+                Rectangle()
+                    .fill(.primary.opacity(0.075))
+                    .frame(height: 1)
+                unifiedFooter
             }
             .background(.ultraThinMaterial)
         }
@@ -173,22 +182,24 @@ struct LauncherView: View {
                 }
                 .frame(width: 34, height: 34)
 
-                TextField("输入开发任务；使用 > 快速执行本地命令", text: $state.prompt)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 15.5, weight: .regular))
-                    .focused($compactInputFocused)
-                    .onSubmit(submitLauncherInput)
-                    .onReceive(NotificationCenter.default.publisher(for: .codexBarFocusPrompt)) { _ in
-                        if !state.isExpanded {
-                            compactInputFocused = true
-                        }
+                ZStack(alignment: .topLeading) {
+                    PromptTextView(
+                        text: $state.prompt,
+                        onSubmit: submitLauncherInput,
+                        onCancel: onClose
+                    )
+                    .frame(minHeight: 46, maxHeight: 64)
+
+                    if state.prompt.isEmpty {
+                        Text("输入开发任务；Shift+Enter 换行；使用 > 快速执行本地命令")
+                            .font(.system(size: 15.5, weight: .regular))
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 8)
+                            .padding(.top, 10)
+                            .allowsHitTesting(false)
                     }
-                    .onAppear {
-                        DispatchQueue.main.async {
-                            compactInputFocused = true
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 36)
+                }
+                .frame(maxWidth: .infinity)
 
                 Button(action: submitLauncherInput) {
                     HStack(spacing: 6) {
@@ -202,7 +213,7 @@ struct LauncherView: View {
 
             HStack(spacing: 8) {
                 Label(
-                    state.isShellCommandInput ? "本地命令" : "Codex 任务",
+                    state.isShellCommandInput ? "本地命令" : "\(state.selectedAgent.title) 任务",
                     systemImage: state.isShellCommandInput ? "terminal" : "bolt.fill"
                 )
                 .font(.caption.weight(.semibold))
@@ -224,14 +235,21 @@ struct LauncherView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(state.executionMode == .background ? "后台执行" : "在 Terminal 中打开 Codex")
+                    Text(state.taskIntent == .plan
+                         ? "只读分析并生成计划"
+                         : (state.executionMode == .background ? "后台执行" : "在所选终端中打开 \(state.selectedAgent.title)"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
+                if !state.isShellCommandInput {
+                    compactAgentPicker
+                    compactIntentPicker
+                }
+
                 Spacer()
 
-                Text("Enter 执行")
+                Text(state.taskIntent == .plan && !state.isShellCommandInput ? "Enter 计划" : "Enter 执行")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -356,96 +374,51 @@ struct LauncherView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 9) {
-                Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.accentColor, Color.blue.opacity(0.82)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(.white.opacity(0.18), lineWidth: 1)
-                    }
-                    .shadow(color: Color.accentColor.opacity(0.28), radius: 10, y: 4)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("CodexBar")
-                        .font(.headline)
-                    Text("快捷任务入口")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button {
-                    state.collapseLauncher()
-                } label: {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .frame(width: 26, height: 26)
-                        .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
-                .help("收起为快捷启动栏")
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
-
-            VStack(spacing: 4) {
-                navigationButton(.compose)
-                navigationButton(.actions)
-                navigationButton(.tasks, badge: state.runningTaskCount)
-                navigationButton(.history, badge: state.history.count)
-            }
-            .padding(.horizontal, 8)
-
-            Divider().opacity(0.45)
-
-            Text("工作目录")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-
             ScrollView {
-                LazyVStack(spacing: 5) {
-                    ForEach(state.workspaces) { workspace in
-                        workspaceButton(workspace)
+                VStack(alignment: .leading, spacing: 14) {
+                    sidebarGroup("任务") {
+                        navigationButton(.compose)
+                        navigationButton(.tasks, badge: state.runningTaskCount)
+                    }
+                    sidebarGroup("项目") {
+                        navigationButton(.actions)
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(state.workspaces) { workspace in
+                                workspaceButton(workspace)
+                            }
+                            HStack(spacing: 8) {
+                                Button(action: state.addWorkspace) {
+                                    Label("添加", systemImage: "plus")
+                                }
+                                .buttonStyle(.plain)
+
+                                Spacer()
+
+                                Button(action: state.revealSelectedWorkspace) {
+                                    Image(systemName: "folder")
+                                }
+                                .buttonStyle(.plain)
+                                .help("在 Finder 中显示")
+                                .disabled(state.selectedWorkspace == nil)
+
+                                Button(action: state.removeSelectedWorkspace) {
+                                    Image(systemName: "minus")
+                                }
+                                .buttonStyle(.plain)
+                                .help("移除当前目录")
+                                .disabled(state.selectedWorkspace == nil)
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 4)
+                        }
+                    }
+                    sidebarGroup("历史") {
+                        navigationButton(.history, badge: state.history.count)
                     }
                 }
                 .padding(.horizontal, 8)
+                .padding(.top, 10)
             }
-
-            HStack(spacing: 8) {
-                Button(action: state.addWorkspace) {
-                    Label("添加", systemImage: "plus")
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Button(action: state.revealSelectedWorkspace) {
-                    Image(systemName: "folder")
-                }
-                .buttonStyle(.plain)
-                .help("在 Finder 中显示")
-                .disabled(state.selectedWorkspace == nil)
-
-                Button(action: state.removeSelectedWorkspace) {
-                    Image(systemName: "minus")
-                }
-                .buttonStyle(.plain)
-                .help("移除当前目录")
-                .disabled(state.selectedWorkspace == nil)
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 6)
 
             Divider().opacity(0.45)
 
@@ -454,16 +427,12 @@ struct LauncherView: View {
             } label: {
                 Label("设置", systemImage: "gearshape")
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 3)
             }
             .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 14)
             .padding(.bottom, 14)
-        }
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(.white.opacity(0.08))
-                .frame(width: 1)
         }
     }
 
@@ -489,19 +458,11 @@ struct LauncherView: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(selected ? Color.accentColor.opacity(0.095) : Color.clear)
-                    }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(selected ? Color.accentColor.opacity(0.18) : Color.clear, lineWidth: 1)
-            }
-            .shadow(color: selected ? Color.accentColor.opacity(0.10) : .clear, radius: 7, y: 3)
+            .glassSurface(
+                cornerRadius: 9,
+                tint: selected ? Color.accentColor.opacity(0.10) : .clear,
+                shadowEnabled: false
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -533,19 +494,11 @@ struct LauncherView: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(selected ? Color.accentColor.opacity(0.085) : Color.clear)
-                    }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(selected ? Color.accentColor.opacity(0.16) : Color.clear, lineWidth: 1)
-            }
-            .shadow(color: selected ? Color.accentColor.opacity(0.08) : .clear, radius: 6, y: 2)
+            .glassSurface(
+                cornerRadius: 9,
+                tint: selected ? Color.accentColor.opacity(0.09) : .clear,
+                shadowEnabled: false
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -567,46 +520,39 @@ struct LauncherView: View {
 
     private var composeContent: some View {
         VStack(spacing: 0) {
-            composeHeader
-            Divider().opacity(0.45)
             promptArea
-            Divider().opacity(0.45)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+            Divider()
+                .opacity(0.45)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
             selectedTaskPreview
-            Divider().opacity(0.45)
-            footer
         }
-    }
-
-    private var composeHeader: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(state.selectedWorkspace?.name ?? "未选择目录")
-                    .font(.headline)
-                Text(state.selectedWorkspace?.path ?? "请先添加工作目录")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            Spacer()
-
-            Picker("", selection: $state.executionMode) {
-                ForEach(ExecutionMode.allCases) { mode in
-                    Label(mode.shortTitle, systemImage: mode.systemImage).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 210)
-
-            pinButton
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 64)
     }
 
     private var promptArea: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if state.isContinuingCodexSession, let threadID = state.pendingResumeThreadID {
+                HStack(spacing: 7) {
+                    Image(systemName: "arrow.trianglehead.clockwise")
+                        .foregroundStyle(Color.accentColor)
+                    Text("继续 Codex 会话 · \(String(threadID.prefix(8)))…")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Button {
+                        state.cancelPendingResume()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .help("取消继续会话，改为新任务")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
+
             ZStack(alignment: .topLeading) {
                 PromptTextView(
                     text: $state.prompt,
@@ -627,7 +573,9 @@ struct LauncherView: View {
 
             HStack {
                 Label(
-                    state.shellCommandAssessment?.reason ?? state.executionMode.explanation,
+                    state.shellCommandAssessment?.reason ?? (state.selectedAgentID == .chatgpt
+                        ? "使用日常 Google Chrome 新建 ChatGPT 会话"
+                        : (state.taskIntent == .plan ? state.taskIntent.explanation : state.executionMode.explanation)),
                     systemImage: state.isShellCommandInput ? "terminal" : "info.circle"
                 )
                 .font(.caption)
@@ -658,8 +606,8 @@ struct LauncherView: View {
                 .disabled(!state.canSubmitLauncherInput)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(14)
+        .glassSurface(cornerRadius: 12, tint: .clear, shadowEnabled: false)
     }
 
     @ViewBuilder
@@ -668,46 +616,20 @@ struct LauncherView: View {
             || !state.shellCommandOutput.isEmpty
             || !state.shellCommandStatusMessage.isEmpty {
             shellCommandResultCard(expanded: true)
-                .padding(18)
+                .padding(16)
         } else if let task = state.selectedTask {
             taskOutputPanel(task: task, compact: true)
         } else {
             emptyTaskState
-                .padding(18)
+                .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     private var taskCenterContent: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("任务中心")
-                        .font(.headline)
-                    Text(state.runningTaskCount == 0
-                         ? "当前没有执行中的后台任务"
-                         : "\(state.runningTaskCount) 个任务执行中，可随时切换查看")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if state.completedTaskCount > 0 {
-                    Button("清理已完成") {
-                        state.clearCompletedTasks()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                }
-                pinButton
-            }
-            .padding(.horizontal, 18)
-            .frame(height: 64)
-
-            Divider().opacity(0.45)
-
+        Group {
             if state.backgroundTasks.isEmpty {
                 emptyTaskState
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HStack(spacing: 0) {
                     ScrollView {
@@ -719,22 +641,20 @@ struct LauncherView: View {
                         .padding(10)
                     }
                     .frame(width: 275)
-                    .background(.black.opacity(0.025))
 
                     Divider().opacity(0.45)
 
                     if let task = state.selectedTask {
                         taskOutputPanel(task: task, compact: false)
                     } else {
-                        Text("选择一个任务查看详情")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        UnifiedEmptyState(
+                            icon: "square.stack",
+                            title: "选择一个任务查看详情",
+                            message: "从左侧列表选择一个任务，查看它的实时输出。"
+                        )
                     }
                 }
             }
-
-            Divider().opacity(0.45)
-            footer
         }
     }
 
@@ -757,10 +677,7 @@ struct LauncherView: View {
                 Spacer(minLength: 0)
             }
             .padding(9)
-            .background(
-                selected ? Color.accentColor.opacity(0.13) : Color.primary.opacity(0.035),
-                in: RoundedRectangle(cornerRadius: 9)
-            )
+            .glassSurface(cornerRadius: 9, tint: selected ? Color.accentColor.opacity(0.10) : .clear, shadowEnabled: false)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -810,6 +727,16 @@ struct LauncherView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if !task.blocks.isEmpty {
+                    Button {
+                        copyTaskOutput(task)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.plain)
+                    .help("复制完整任务输出")
+                }
+
                 if task.status.isRunning {
                     Button(role: .destructive) {
                         state.cancelTask(id: task.id)
@@ -842,42 +769,13 @@ struct LauncherView: View {
     }
 
     private var historyContent: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("历史记录")
-                        .font(.headline)
-                    Text("保留最近 100 条任务；点击可重新载入任务和目录")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if !state.history.isEmpty {
-                    Button("清空历史", role: .destructive) {
-                        state.clearHistory()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                }
-                pinButton
-            }
-            .padding(.horizontal, 18)
-            .frame(height: 64)
-
-            Divider().opacity(0.45)
-
+        Group {
             if state.history.isEmpty {
-                VStack(spacing: 9) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 30))
-                        .foregroundStyle(.tertiary)
-                    Text("还没有历史任务")
-                        .font(.headline)
-                    Text("后台执行和终端交互任务都会记录在这里。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                UnifiedEmptyState(
+                    icon: "clock.arrow.circlepath",
+                    title: "还没有历史任务",
+                    message: "后台执行和终端交互任务都会记录在这里。"
+                )
             } else {
                 ScrollView {
                     LazyVStack(spacing: 7) {
@@ -888,16 +786,17 @@ struct LauncherView: View {
                     .padding(14)
                 }
             }
-
-            Divider().opacity(0.45)
-            footer
         }
     }
 
     private func historyRow(_ item: TaskHistoryItem) -> some View {
         HStack(spacing: 10) {
             Button {
-                state.useHistory(item)
+                if item.transcriptAvailable {
+                    state.openHistory(item)
+                } else {
+                    state.useHistory(item)
+                }
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: item.mode.systemImage)
@@ -907,19 +806,47 @@ struct LauncherView: View {
                         Text(item.prompt.isEmpty ? "打开 Codex 交互会话" : item.prompt)
                             .font(.system(size: 13))
                             .lineLimit(2)
-                        Text("\(item.workspaceName) · \(item.createdAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 5) {
+                            Text("\(item.workspaceName) · \(item.agent.title) · \(item.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            if item.transcriptAvailable {
+                                Text("· 有输出")
+                            }
+                            if item.threadID != nil {
+                                Text("· 可继续")
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     }
                     Spacer()
                     historyStatusIcon(item.succeeded)
-                    Text("再次使用")
+                    Text(item.transcriptAvailable ? "查看" : "再次使用")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            if item.transcriptAvailable {
+                Button {
+                    state.useHistory(item)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("作为新任务再次使用")
+            }
+
+            if item.agent == .codex, item.threadID != nil {
+                Button {
+                    state.continueHistory(item)
+                } label: {
+                    Image(systemName: "arrowshape.turn.up.left")
+                }
+                .buttonStyle(.plain)
+                .help("继续这个 Codex 会话")
+            }
 
             Button(role: .destructive) {
                 state.deleteHistory(item)
@@ -931,24 +858,41 @@ struct LauncherView: View {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+        .glassSurface(cornerRadius: 10, tint: .clear, shadowEnabled: false)
+    }
+
+    private func copyTaskOutput(_ task: BackgroundTaskSession) {
+        var sections: [String] = []
+        sections.append("# \(task.displayPrompt)")
+        sections.append("工作目录：\(task.workspacePath)")
+        sections.append("Agent：\(task.agent.title) · 模式：\(task.intent.title) · 状态：\(task.status.title)")
+        if let threadID = task.threadID, !threadID.isEmpty {
+            sections.append("会话：\(threadID)")
+        }
+        for block in task.blocks {
+            var lines = ["## \(block.title)"]
+            if !block.body.isEmpty { lines.append(block.body) }
+            if !block.detail.isEmpty { lines.append(block.detail) }
+            if !block.fileChanges.isEmpty {
+                lines.append(contentsOf: block.fileChanges.map { "\($0.title)：\($0.path)" })
+            }
+            if !block.todos.isEmpty {
+                lines.append(contentsOf: block.todos.map { "\($0.completed ? "[x]" : "[ ]") \($0.text)" })
+            }
+            sections.append(lines.joined(separator: "\n"))
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sections.joined(separator: "\n\n"), forType: .string)
     }
 
     private var emptyTaskState: some View {
-        VStack(spacing: 9) {
-            Image(systemName: "rectangle.stack.badge.play")
-                .font(.system(size: 30))
-                .foregroundStyle(.tertiary)
-            Text("后台任务会显示在这里")
-                .font(.headline)
-            Text("可以连续提交多个任务，再从任务中心切换查看各自输出。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("创建新任务") {
-                state.selectSection(.compose)
-            }
-            .buttonStyle(.bordered)
-        }
+        UnifiedEmptyState(
+            icon: "rectangle.stack.badge.play",
+            title: "后台任务会显示在这里",
+            message: "可以连续提交多个任务，再从任务中心切换查看各自输出。",
+            actionTitle: "创建新任务",
+            action: { state.selectSection(.compose) }
+        )
     }
 
     private var pinButton: some View {
@@ -964,6 +908,228 @@ struct LauncherView: View {
         }
         .buttonStyle(.plain)
         .help(state.isPinned ? "取消固定；失去焦点后自动收起" : "固定窗口；切换到其他应用时保持显示")
+    }
+
+    private var unifiedToolbar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 9) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.accentColor, Color.blue.opacity(0.82)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    )
+                    .shadow(color: Color.accentColor.opacity(0.20), radius: 6, y: 2)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("CodexBar · \(state.navigation.title)")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .lineLimit(1)
+                    Text("\(state.selectedWorkspace?.name ?? "未选择目录") · \(state.selectedWorkspace?.path ?? "请先添加工作目录")")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer()
+
+            agentPicker
+
+            toolbarSectionActions
+
+            collapseButton
+
+            pinButton
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 56)
+    }
+
+    private var collapseButton: some View {
+        Button {
+            state.collapseLauncher()
+        } label: {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .frame(width: 28, height: 28)
+                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .help("收起为快捷启动栏")
+    }
+
+    private var agentPicker: some View {
+        Menu {
+            ForEach(AgentKind.allCases) { agent in
+                Button {
+                    state.selectedAgentID = agent
+                } label: {
+                    Label(
+                        agent.title,
+                        systemImage: agent == state.selectedAgent ? "checkmark" : agent.systemImage
+                    )
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: state.selectedAgent.systemImage)
+                    .foregroundStyle(Color.accentColor)
+                Text(state.selectedAgent.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("切换执行 Agent")
+    }
+
+    private var compactIntentPicker: some View {
+        Menu {
+            ForEach(AgentTaskIntent.allCases) { intent in
+                Button {
+                    state.taskIntent = intent
+                } label: {
+                    Label(intent.title, systemImage: intent == state.taskIntent ? "checkmark" : (intent == .plan ? "list.bullet.rectangle" : "bolt.fill"))
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: state.taskIntent == .plan ? "list.bullet.rectangle" : "bolt.fill")
+                    .font(.caption)
+                Text(state.taskIntent.title)
+                    .font(.caption.weight(.semibold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(state.taskIntent.explanation)
+    }
+
+    private var compactAgentPicker: some View {
+        Menu {
+            ForEach(AgentKind.allCases) { agent in
+                Button {
+                    state.selectedAgentID = agent
+                } label: {
+                    Label(
+                        agent.title,
+                        systemImage: agent == state.selectedAgent ? "checkmark" : agent.systemImage
+                    )
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: state.selectedAgent.systemImage)
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+                Text(state.selectedAgent.title)
+                    .font(.caption.weight(.semibold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var toolbarSectionActions: some View {
+        switch state.navigation {
+        case .compose:
+            Picker("", selection: $state.taskIntent) {
+                ForEach(AgentTaskIntent.allCases) { intent in
+                    Text(intent.shortTitle).tag(intent)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 118)
+            .help(state.taskIntent.explanation)
+
+            Picker("", selection: $state.executionMode) {
+                ForEach(ExecutionMode.allCases) { mode in
+                    Label(mode.shortTitle, systemImage: mode.systemImage).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 200)
+            .disabled(state.taskIntent == .plan || state.isContinuingCodexSession)
+            .help(state.isContinuingCodexSession ? "继续历史 Codex 会话当前仅支持后台模式" : state.executionMode.explanation)
+        case .actions:
+            if state.isDiscoveringLocalActions {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.trailing, 4)
+            }
+            Button {
+                state.localActionsMode = state.localActionsMode == .browse ? .manage : .browse
+            } label: {
+                Label(
+                    state.localActionsMode == .browse ? "管理脚本" : "返回操作",
+                    systemImage: state.localActionsMode == .browse ? "slider.horizontal.3" : "bolt.fill"
+                )
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .help("在操作列表与脚本管理之间切换")
+
+            Button {
+                state.refreshLocalActions()
+            } label: {
+                Label("重新扫描", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .disabled(state.selectedWorkspace == nil)
+            .help("重新扫描项目操作")
+        case .tasks:
+            if state.runningTaskCount > 0 {
+                Label("\(state.runningTaskCount) 个执行中", systemImage: "circle.dotted")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if state.completedTaskCount > 0 {
+                Button("清理已完成") {
+                    state.clearCompletedTasks()
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+            }
+        case .history:
+            if !state.history.isEmpty {
+                Button("清空历史", role: .destructive) {
+                    state.clearHistory()
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+            }
+        }
+    }
+
+    private func sidebarGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+            content()
+        }
     }
 
     private func taskStatusIcon(_ status: BackgroundTaskStatus) -> some View {
@@ -1001,7 +1167,7 @@ struct LauncherView: View {
 
     private func outputPlaceholder(for task: BackgroundTaskSession) -> String {
         switch task.status {
-        case .running: return "等待 Codex 输出…"
+        case .running: return "等待 \(task.agent.title) 输出…"
         case .succeeded: return "任务已完成，但没有产生文本输出。"
         case .failed: return "任务执行失败。"
         case .cancelled: return "任务已停止。"
@@ -1020,17 +1186,22 @@ struct LauncherView: View {
             case .terminalOnly: return "打开 Terminal"
             }
         }
-        return state.executionMode == .background ? "执行任务" : "打开 Codex"
+        if state.selectedAgentID == .chatgpt { return "发送" }
+        if state.taskIntent == .plan { return "生成计划" }
+        return state.executionMode == .background ? "执行任务" : "打开 \(state.selectedAgent.title)"
     }
 
     private var submitSystemImage: String {
         if let assessment = state.shellCommandAssessment {
             return assessment.risk == .terminalOnly ? "terminal.fill" : "play.fill"
         }
+        if state.selectedAgentID == .chatgpt { return "paperplane.fill" }
+        if state.taskIntent == .plan { return "list.bullet.rectangle" }
         return state.executionMode == .background ? "bolt.fill" : "terminal.fill"
     }
 
     private func submitLauncherInput() {
+        guard state.canSubmitLauncherInput else { return }
         guard let command = state.parsedShellCommand else {
             state.runCurrentTask()
             return
@@ -1181,21 +1352,27 @@ struct LauncherView: View {
         }
     }
 
-    private var footer: some View {
+    private var unifiedFooter: some View {
         HStack(spacing: 8) {
             Circle()
                 .frame(width: 7, height: 7)
-                .foregroundStyle(state.effectiveCodexPath == nil ? .red : .green)
+                .foregroundStyle(state.selectedAgentID == .chatgpt || state.effectiveAgentPath(for: state.selectedAgentID) != nil ? .green : .red)
 
-            if state.isDetectingCodex {
-                Text("正在检测 Codex…")
+            if state.isDetectingAgents {
+                Text("正在检测 Agent…")
             } else if !state.statusMessage.isEmpty {
                 Text(state.statusMessage)
                     .lineLimit(1)
             } else if state.runningTaskCount > 0 {
                 Text("\(state.runningTaskCount) 个后台任务执行中")
+            } else if state.selectedAgentID == .chatgpt {
+                Text("ChatGPT 已就绪 · Google Chrome")
+            } else if let path = state.effectiveAgentPath(for: state.selectedAgentID) {
+                Text("\(state.selectedAgent.title) 已就绪 · \(path)")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             } else {
-                Text(state.effectiveCodexPath == nil ? "未检测到 Codex CLI" : "Codex 已就绪")
+                Text("未检测到 \(state.selectedAgent.title) CLI")
             }
 
             Spacer()
@@ -1208,8 +1385,8 @@ struct LauncherView: View {
         }
         .font(.caption)
         .foregroundStyle(state.lastRunSucceeded == false ? Color.red : Color.secondary)
-        .padding(.horizontal, 18)
-        .frame(height: 40)
+        .padding(.horizontal, 16)
+        .frame(height: 36)
     }
 }
 
@@ -1884,5 +2061,51 @@ private struct CompactSuggestionButtonStyle: ButtonStyle {
                     .stroke(tint.opacity(0.12), lineWidth: 1)
             }
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
+/// Shared empty-state used across workspace sections so the panel reads as one
+/// surface rather than four hand-rolled placeholders.
+struct UnifiedEmptyState: View {
+    let icon: String
+    let title: String
+    let message: String
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(spacing: 11) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.accentColor.opacity(0.15), Color.cyan.opacity(0.055)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image(systemName: icon)
+                    .font(.system(size: 25, weight: .medium))
+                    .foregroundStyle(Color.accentColor.opacity(0.8))
+            }
+            .frame(width: 54, height: 54)
+
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(26)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .glassSurface(cornerRadius: 18, tint: Color.accentColor.opacity(0.018), shadowEnabled: false)
     }
 }

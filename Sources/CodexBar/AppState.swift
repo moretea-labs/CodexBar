@@ -26,7 +26,16 @@ final class AppState: ObservableObject {
     @Published var hotKeyPreset: HotKeyPreset {
         didSet { savePreferences() }
     }
-    @Published var customCodexPath: String {
+    @Published var selectedAgentID: AgentKind {
+        didSet { savePreferences() }
+    }
+    @Published var agentCustomPaths: [String: String] {
+        didSet { savePreferences() }
+    }
+    @Published var terminalTemplate: String {
+        didSet { savePreferences() }
+    }
+    @Published var chatGPTPromptPrefix: String {
         didSet { savePreferences() }
     }
     @Published var history: [TaskHistoryItem] {
@@ -42,6 +51,7 @@ final class AppState: ObservableObject {
     @Published var localActionStatusMessage = ""
     @Published var lastLocalActionSucceeded: Bool?
     @Published var isDiscoveringLocalActions = false
+    @Published var localActionsMode: LocalActionsMode = .browse
 
     @Published var shellCommandHistory: [ShellCommandRecord] = []
     @Published var runningShellCommand: String?
@@ -55,15 +65,24 @@ final class AppState: ObservableObject {
     @Published var isPinned = false
     @Published var isExpanded = false
     @Published var prompt = ""
+    @Published var taskIntent: AgentTaskIntent = .execute {
+        didSet {
+            if taskIntent == .plan {
+                executionMode = .background
+            }
+        }
+    }
     @Published var backgroundTasks: [BackgroundTaskSession] = []
     @Published var selectedTaskID: UUID?
+    @Published var pendingResumeThreadID: String?
     @Published var statusMessage = ""
     @Published var lastRunSucceeded: Bool?
-    @Published var detectedCodexPath: String?
-    @Published var isDetectingCodex = false
+    @Published var detectedAgentPaths: [String: String] = [:]
+    @Published var isDetectingAgents = false
     @Published var isPresentingSystemPanel = false
 
-    private var runners: [UUID: CodexRunner] = [:]
+    private var runners: [UUID: AgentRunner] = [:]
+    private var parsers: [UUID: AgentOutputParsing] = [:]
     private var cancelledTaskIDs = Set<UUID>()
     private var localActionRunner: LocalActionRunner?
     private var shellCommandRunner: ShellCommandRunner?
@@ -78,7 +97,10 @@ final class AppState: ObservableObject {
             // Every launch defaults to background mode, regardless of the last session.
             executionMode = .background
             hotKeyPreset = saved.hotKeyPreset
-            customCodexPath = saved.customCodexPath
+            selectedAgentID = saved.agentSelectionVersion < 1 ? .chatgpt : saved.selectedAgentID
+            agentCustomPaths = saved.agentCustomPaths
+            terminalTemplate = saved.terminalTemplate
+            chatGPTPromptPrefix = saved.chatGPTPromptPrefix
             history = saved.history
         } else {
             let initial = Self.defaultWorkspace()
@@ -86,7 +108,10 @@ final class AppState: ObservableObject {
             selectedWorkspaceID = initial.id
             executionMode = .background
             hotKeyPreset = .optionSpace
-            customCodexPath = ""
+            selectedAgentID = .chatgpt
+            agentCustomPaths = [:]
+            terminalTemplate = TerminalTemplate.defaultSource
+            chatGPTPromptPrefix = ChatGPTLauncher.defaultPromptPrefix
             history = []
         }
 
@@ -100,7 +125,7 @@ final class AppState: ObservableObject {
             selectedWorkspaceID = workspaces.first?.id
         }
         isLoading = false
-        detectCodex()
+        detectAgents()
         refreshLocalActions()
     }
 
@@ -109,12 +134,15 @@ final class AppState: ObservableObject {
         return workspaces.first(where: { $0.id == selectedWorkspaceID }) ?? workspaces.first
     }
 
-    var effectiveCodexPath: String? {
-        let custom = customCodexPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    var selectedAgent: AgentKind { selectedAgentID }
+
+    func effectiveAgentPath(for agent: AgentKind) -> String? {
+        let custom = (agentCustomPaths[agent.rawValue] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if !custom.isEmpty, FileManager.default.isExecutableFile(atPath: custom) {
             return custom
         }
-        return detectedCodexPath
+        return detectedAgentPaths[agent.rawValue]
     }
 
     var selectedTask: BackgroundTaskSession? {
@@ -132,6 +160,16 @@ final class AppState: ObservableObject {
 
     var availableLocalActions: [LocalAction] {
         localActions.filter(\.published)
+    }
+
+    /// Unpublished scripts awaiting curation (the "整理" step).
+    var pendingLocalActions: [LocalAction] {
+        localActions.filter { !$0.published }
+    }
+
+    /// Customized one-click operations whose backing script changed.
+    var reviewLocalActions: [LocalAction] {
+        localActions.filter(\.quickRunNeedsReview)
     }
 
     var recentLocalActionIDs: [String] {
@@ -185,25 +223,55 @@ final class AppState: ObservableObject {
         return canRun
     }
 
+    var isContinuingCodexSession: Bool {
+        selectedAgentID == .codex && pendingResumeThreadID != nil
+    }
+
     var canRun: Bool {
-        guard selectedWorkspace != nil, effectiveCodexPath != nil else { return false }
-        if executionMode == .background {
-            return !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasPrompt = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if selectedAgentID == .chatgpt {
+            return hasPrompt
+        }
+        guard selectedWorkspace != nil, effectiveAgentPath(for: selectedAgentID) != nil else { return false }
+        if taskIntent == .plan || pendingResumeThreadID != nil || executionMode == .background {
+            return hasPrompt
         }
         return true
     }
 
-    func detectCodex() {
-        isDetectingCodex = true
-        ExecutableLocator.locateCodex(customPath: customCodexPath) { [weak self] path in
-            guard let self else { return }
-            self.detectedCodexPath = path
-            self.isDetectingCodex = false
-            if path == nil {
-                self.statusMessage = CodexBarError.codexNotFound.localizedDescription
-            } else if self.statusMessage == CodexBarError.codexNotFound.localizedDescription {
-                self.statusMessage = ""
+    func detectAgents() {
+        isDetectingAgents = true
+        let agents = AgentKind.localAgents
+        var completed = 0
+        for agent in agents {
+            locateAgent(agent) { [weak self] _ in
+                guard let self else { return }
+                completed += 1
+                guard completed == agents.count else { return }
+                self.isDetectingAgents = false
+                guard self.selectedAgentID.usesLocalExecutable else { return }
+                if self.effectiveAgentPath(for: self.selectedAgentID) == nil {
+                    self.statusMessage = CodexBarError.agentNotFound(self.selectedAgentID).localizedDescription
+                } else if self.statusMessage == CodexBarError.agentNotFound(self.selectedAgentID).localizedDescription {
+                    self.statusMessage = ""
+                }
             }
+        }
+    }
+
+    func detectAgent(_ agent: AgentKind) {
+        guard agent.usesLocalExecutable else { return }
+        locateAgent(agent) { _ in }
+    }
+
+    private func locateAgent(_ agent: AgentKind, completion: @escaping (String?) -> Void) {
+        ExecutableLocator.locateExecutable(
+            name: agent.commandName,
+            customPath: agentCustomPaths[agent.rawValue] ?? ""
+        ) { [weak self] path in
+            guard let self else { return }
+            self.detectedAgentPaths[agent.rawValue] = path
+            completion(path)
         }
     }
 
@@ -246,7 +314,7 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: selectedWorkspace.path)])
     }
 
-    func chooseCodexExecutable() {
+    func chooseExecutable(for agent: AgentKind) {
         isPresentingSystemPanel = true
         defer {
             isPresentingSystemPanel = false
@@ -254,15 +322,15 @@ final class AppState: ObservableObject {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "选择 Codex 可执行文件"
+        panel.title = "选择 \(agent.title) 可执行文件"
         panel.prompt = "选择"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        customCodexPath = url.path
-        detectCodex()
+        agentCustomPaths[agent.rawValue] = url.path
+        detectAgent(agent)
     }
 
     func showCompactLauncher() {
@@ -317,24 +385,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    func localActions(scope: LocalActionScope, matching query: String) -> [LocalAction] {
-        let base: [LocalAction]
-        switch scope {
-        case .available:
-            base = availableLocalActions
-        case .favorites:
-            base = localActions.filter { localActionFavoriteIDs.contains($0.id) }
-        case .recent:
-            let actionsByID = Dictionary(uniqueKeysWithValues: localActions.map { ($0.id, $0) })
-            base = recentLocalActionIDs.compactMap { actionsByID[$0] }
-        case .discovered:
-            base = localActions
-        }
-
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty, scope == .recent { return base }
-        return LocalActionCatalog.search(
-            base,
+    func searchLocalActions(matching query: String) -> [LocalAction] {
+        LocalActionCatalog.search(
+            availableLocalActions,
             query: query,
             favoriteIDs: localActionFavoriteIDs,
             recentActionIDs: recentLocalActionIDs
@@ -442,20 +495,106 @@ final class AppState: ObservableObject {
     }
 
     func useHistory(_ item: TaskHistoryItem) {
+        pendingResumeThreadID = nil
         prompt = item.prompt
         if let workspace = workspaces.first(where: { $0.path == item.workspacePath }) {
             selectedWorkspaceID = workspace.id
         }
-        executionMode = item.mode
+        taskIntent = item.intent
+        executionMode = item.intent == .plan ? .background : item.mode
+        selectedAgentID = item.agent
         navigation = .compose
         NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
     }
 
+    func openHistory(_ item: TaskHistoryItem) {
+        if let existing = backgroundTasks.first(where: { $0.historyID == item.id }) {
+            selectTask(existing.id, openTaskCenter: true)
+            return
+        }
+        guard item.transcriptAvailable,
+              let transcript = TaskHistoryTranscriptStore.load(for: item.id) else {
+            useHistory(item)
+            return
+        }
+
+        let task = BackgroundTaskSession(
+            historyID: item.id,
+            prompt: item.prompt,
+            workspaceName: item.workspaceName,
+            workspacePath: item.workspacePath,
+            agent: item.agent,
+            intent: item.intent,
+            createdAt: item.createdAt,
+            finishedAt: transcript.finishedAt,
+            threadID: item.threadID,
+            blocks: transcript.blocks,
+            outputRevision: transcript.blocks.count,
+            usage: transcript.usage,
+            status: transcript.status,
+            exitCode: transcript.exitCode,
+            errorMessage: transcript.errorMessage
+        )
+        backgroundTasks.insert(task, at: 0)
+        selectedTaskID = task.id
+        trimSessionTasksIfNeeded()
+        navigation = .tasks
+    }
+
+    func continueHistory(_ item: TaskHistoryItem) {
+        guard item.agent == .codex,
+              let threadID = item.threadID,
+              !threadID.isEmpty else {
+            statusMessage = "这条历史没有可继续的 Codex 会话 ID。"
+            return
+        }
+        if let workspace = workspaces.first(where: { $0.path == item.workspacePath }) {
+            selectedWorkspaceID = workspace.id
+        }
+        selectedAgentID = .codex
+        taskIntent = .execute
+        executionMode = .background
+        pendingResumeThreadID = threadID
+        prompt = ""
+        navigation = .compose
+        statusMessage = "继续 Codex 会话：请输入下一条指令。"
+        NotificationCenter.default.post(name: .codexBarFocusPrompt, object: nil)
+    }
+
+    func cancelPendingResume() {
+        pendingResumeThreadID = nil
+        statusMessage = ""
+    }
+
+    func sendCurrentPromptToChatGPT() {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        statusMessage = "正在用 Chrome 打开 ChatGPT…"
+        lastRunSucceeded = nil
+        ChatGPTLauncher.open(prompt: trimmed, prefix: chatGPTPromptPrefix) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(.submitted):
+                self.prompt = ""
+                self.lastRunSucceeded = true
+                self.statusMessage = "已在日常 Chrome 新建 ChatGPT 会话并提交指令。"
+            case .success(.prefilledNeedsAccessibility):
+                self.lastRunSucceeded = nil
+                self.statusMessage = "已在 Chrome 新建会话并填入指令；授权辅助功能后可保证自动提交。"
+            case .failure(let error):
+                self.lastRunSucceeded = false
+                self.statusMessage = error.localizedDescription
+            }
+        }
+    }
+
     func deleteHistory(_ item: TaskHistoryItem) {
+        TaskHistoryTranscriptStore.delete(for: item.id)
         history.removeAll(where: { $0.id == item.id })
     }
 
     func clearHistory() {
+        TaskHistoryTranscriptStore.clear()
         history.removeAll()
     }
 
@@ -532,9 +671,13 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            try TerminalLauncher.launchCommand(command: command, workspacePath: workspace.path)
+            try TerminalLauncher.launchCommand(
+                command: command,
+                workspacePath: workspace.path,
+                template: TerminalTemplate(source: terminalTemplate)
+            )
             lastShellCommand = command
-            shellCommandStatusMessage = "已在 Terminal 中打开命令。"
+            shellCommandStatusMessage = "已在所选终端中打开命令。"
             lastShellCommandSucceeded = true
             prompt = ""
         } catch {
@@ -560,48 +703,66 @@ final class AppState: ObservableObject {
         statusMessage = ""
         lastRunSucceeded = nil
 
+        if selectedAgentID == .chatgpt {
+            sendCurrentPromptToChatGPT()
+            return
+        }
+
         guard let workspace = selectedWorkspace,
               FileManager.default.fileExists(atPath: workspace.path) else {
             statusMessage = CodexBarError.invalidWorkspace.localizedDescription
             return
         }
-        guard let executablePath = effectiveCodexPath else {
-            statusMessage = CodexBarError.codexNotFound.localizedDescription
+        guard let executablePath = effectiveAgentPath(for: selectedAgentID) else {
+            statusMessage = CodexBarError.agentNotFound(selectedAgentID).localizedDescription
             return
         }
 
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if executionMode == .background, trimmedPrompt.isEmpty {
+        let resumeSessionID = selectedAgentID == .codex ? pendingResumeThreadID : nil
+        let effectiveExecutionMode: ExecutionMode = (taskIntent == .plan || resumeSessionID != nil)
+            ? .background
+            : executionMode
+        if executionMode != effectiveExecutionMode {
+            executionMode = effectiveExecutionMode
+        }
+        if effectiveExecutionMode == .background, trimmedPrompt.isEmpty {
             statusMessage = CodexBarError.emptyPrompt.localizedDescription
             return
         }
-
         let historyItem = TaskHistoryItem(
             prompt: trimmedPrompt,
             workspaceName: workspace.name,
             workspacePath: workspace.path,
-            mode: executionMode
+            mode: effectiveExecutionMode,
+            agent: selectedAgentID,
+            intent: taskIntent,
+            threadID: resumeSessionID
         )
         prependHistory(historyItem)
 
-        switch executionMode {
+        switch effectiveExecutionMode {
         case .background:
             startBackgroundTask(
                 historyItem: historyItem,
                 executablePath: executablePath,
                 workspace: workspace,
-                prompt: trimmedPrompt
+                prompt: trimmedPrompt,
+                resumeSessionID: resumeSessionID
             )
+            pendingResumeThreadID = nil
         case .terminal:
             do {
                 try TerminalLauncher.launch(
+                    agent: selectedAgentID,
                     executablePath: executablePath,
                     workspacePath: workspace.path,
-                    initialPrompt: trimmedPrompt
+                    initialPrompt: trimmedPrompt,
+                    template: TerminalTemplate(source: terminalTemplate)
                 )
                 updateHistory(id: historyItem.id, succeeded: true)
                 lastRunSucceeded = true
-                statusMessage = "已在 Terminal 中启动 Codex。"
+                statusMessage = "已在所选终端中启动 \(selectedAgentID.title)。"
                 prompt = ""
             } catch {
                 updateHistory(id: historyItem.id, succeeded: false)
@@ -656,26 +817,41 @@ final class AppState: ObservableObject {
         historyItem: TaskHistoryItem,
         executablePath: String,
         workspace: Workspace,
-        prompt: String
+        prompt: String,
+        resumeSessionID: String?
     ) {
+        let agent = historyItem.agent
         let taskSession = BackgroundTaskSession(
             historyID: historyItem.id,
             prompt: prompt,
             workspaceName: workspace.name,
-            workspacePath: workspace.path
+            workspacePath: workspace.path,
+            agent: agent,
+            intent: historyItem.intent,
+            threadID: resumeSessionID
         )
-        let runner = CodexRunner()
+        let runner = AgentRunner()
+        let parser = AgentParserRegistry.parser(for: agent)
+        let plan = AgentCommandFactory.backgroundPlan(
+            agent: agent,
+            executablePath: executablePath,
+            workspacePath: workspace.path,
+            prompt: prompt,
+            intent: historyItem.intent,
+            resumeSessionID: resumeSessionID
+        )
 
         backgroundTasks.insert(taskSession, at: 0)
         selectedTaskID = taskSession.id
         runners[taskSession.id] = runner
+        parsers[taskSession.id] = parser
         trimSessionTasksIfNeeded()
 
         do {
             try runner.start(
-                executablePath: executablePath,
+                shellCommand: plan.shellCommand,
+                stdinPrompt: plan.stdinPrompt,
                 workspacePath: workspace.path,
-                prompt: prompt,
                 onEventLine: { [weak self] line in
                     self?.handleEventLine(line, for: taskSession.id)
                 },
@@ -692,25 +868,27 @@ final class AppState: ObservableObject {
                 : "任务已启动，可继续创建其他任务。"
         } catch {
             runners[taskSession.id] = nil
+            parsers[taskSession.id] = nil
             markTaskLaunchFailure(id: taskSession.id, error: error)
         }
     }
 
     private func handleEventLine(_ line: String, for id: UUID) {
         guard let index = backgroundTasks.firstIndex(where: { $0.id == id }) else { return }
-        let mutation = CodexJSONEventParser.parse(line: line)
+        let mutation = parsers[id]?.parse(line) ?? .ignored
 
         switch mutation {
         case .threadStarted(let threadID):
             if !threadID.isEmpty {
                 backgroundTasks[index].threadID = threadID
+                updateHistoryThreadID(id: backgroundTasks[index].historyID, threadID: threadID)
             }
         case .turnStarted:
             upsertBlock(
                 CodexOutputBlock(
                     id: "turn-started",
                     kind: .lifecycle,
-                    title: "Codex 已开始处理",
+                    title: "\(backgroundTasks[index].agent.title) 已开始处理",
                     status: .inProgress
                 ),
                 at: index
@@ -719,6 +897,10 @@ final class AppState: ObservableObject {
             upsertBlock(block, at: index)
         case .append(let block):
             backgroundTasks[index].blocks.append(block)
+        case .appendText(let text, let blockID):
+            if let blockIndex = backgroundTasks[index].blocks.firstIndex(where: { $0.id == blockID }) {
+                backgroundTasks[index].blocks[blockIndex].body.append(text)
+            }
         case .turnCompleted(let usage):
             backgroundTasks[index].usage = usage
             backgroundTasks[index].blocks.removeAll(where: { $0.id == "turn-started" })
@@ -784,12 +966,15 @@ final class AppState: ObservableObject {
     private func finishTask(id: UUID, result: Result<Int32, Error>) {
         guard let index = backgroundTasks.firstIndex(where: { $0.id == id }) else {
             runners[id] = nil
+            parsers[id] = nil
             cancelledTaskIDs.remove(id)
             return
         }
 
+        let agent = backgroundTasks[index].agent
         let wasCancelled = cancelledTaskIDs.remove(id) != nil
         runners[id] = nil
+        parsers[id] = nil
         backgroundTasks[index].finishedAt = Date()
 
         if wasCancelled {
@@ -805,6 +990,7 @@ final class AppState: ObservableObject {
             )
             backgroundTasks[index].outputRevision += 1
             updateHistory(id: backgroundTasks[index].historyID, succeeded: false)
+            syncHistoryTranscript(from: backgroundTasks[index])
             if selectedTaskID == id {
                 lastRunSucceeded = false
                 statusMessage = "任务已停止。"
@@ -819,7 +1005,7 @@ final class AppState: ObservableObject {
             backgroundTasks[index].status = succeeded ? .succeeded : .failed
             if !succeeded {
                 backgroundTasks[index].blocks.removeAll(where: { $0.id == "turn-started" })
-                let message = "Codex 已退出，状态码：\(code)"
+                let message = "\(agent.title) 已退出，状态码：\(code)"
                 backgroundTasks[index].errorMessage = message
                 if !backgroundTasks[index].blocks.contains(where: { $0.kind == .error }) {
                     backgroundTasks[index].blocks.append(
@@ -845,9 +1031,10 @@ final class AppState: ObservableObject {
                 backgroundTasks[index].outputRevision += 1
             }
             updateHistory(id: backgroundTasks[index].historyID, succeeded: succeeded)
+            syncHistoryTranscript(from: backgroundTasks[index])
             if selectedTaskID == id {
                 lastRunSucceeded = succeeded
-                statusMessage = succeeded ? "任务已完成。" : "Codex 已退出，状态码：\(code)"
+                statusMessage = succeeded ? "任务已完成。" : "\(agent.title) 已退出，状态码：\(code)"
             }
         case .failure(let error):
             backgroundTasks[index].blocks.removeAll(where: { $0.id == "turn-started" })
@@ -863,6 +1050,7 @@ final class AppState: ObservableObject {
             )
             backgroundTasks[index].outputRevision += 1
             updateHistory(id: backgroundTasks[index].historyID, succeeded: false)
+            syncHistoryTranscript(from: backgroundTasks[index])
             if selectedTaskID == id {
                 lastRunSucceeded = false
                 statusMessage = error.localizedDescription
@@ -878,13 +1066,14 @@ final class AppState: ObservableObject {
         backgroundTasks[index].blocks.append(
             CodexOutputBlock(
                 kind: .error,
-                title: "无法启动 Codex",
+                title: "无法启动 \(backgroundTasks[index].agent.title)",
                 body: error.localizedDescription,
                 status: .failed
             )
         )
         backgroundTasks[index].outputRevision += 1
         updateHistory(id: backgroundTasks[index].historyID, succeeded: false)
+        syncHistoryTranscript(from: backgroundTasks[index])
         lastRunSucceeded = false
         statusMessage = error.localizedDescription
     }
@@ -1005,12 +1194,35 @@ final class AppState: ObservableObject {
 
     private func prependHistory(_ item: TaskHistoryItem) {
         history.insert(item, at: 0)
-        history = Array(history.prefix(100))
+        if history.count > 100 {
+            let removed = Array(history.dropFirst(100))
+            history = Array(history.prefix(100))
+            removed.forEach { TaskHistoryTranscriptStore.delete(for: $0.id) }
+        }
     }
 
     private func updateHistory(id: UUID, succeeded: Bool) {
         guard let index = history.firstIndex(where: { $0.id == id }) else { return }
         history[index].succeeded = succeeded
+    }
+
+    private func updateHistoryThreadID(id: UUID, threadID: String) {
+        guard let index = history.firstIndex(where: { $0.id == id }) else { return }
+        history[index].threadID = threadID
+    }
+
+    private func syncHistoryTranscript(from task: BackgroundTaskSession) {
+        guard let index = history.firstIndex(where: { $0.id == task.historyID }) else { return }
+        history[index].threadID = task.threadID
+        let transcript = TaskHistoryTranscript(
+            finishedAt: task.finishedAt,
+            status: task.status,
+            blocks: task.blocks,
+            usage: task.usage,
+            exitCode: task.exitCode,
+            errorMessage: task.errorMessage
+        )
+        history[index].transcriptAvailable = TaskHistoryTranscriptStore.save(transcript, for: task.historyID)
     }
 
     private func savePreferences() {
@@ -1020,8 +1232,12 @@ final class AppState: ObservableObject {
             selectedWorkspaceID: selectedWorkspaceID,
             executionMode: executionMode,
             hotKeyPreset: hotKeyPreset,
-            customCodexPath: customCodexPath,
-            history: history
+            history: history,
+            selectedAgentID: selectedAgentID,
+            agentSelectionVersion: 1,
+            agentCustomPaths: agentCustomPaths,
+            terminalTemplate: terminalTemplate,
+            chatGPTPromptPrefix: chatGPTPromptPrefix
         )
         PersistenceStore.save(preferences)
     }

@@ -3,33 +3,27 @@ import Foundation
 
 enum TerminalLauncher {
     static func launch(
+        agent: AgentKind,
         executablePath: String,
         workspacePath: String,
-        initialPrompt: String
+        initialPrompt: String,
+        template: TerminalTemplate
     ) throws {
-        var commandParts = [
-            "clear;",
-            ShellUtilities.shellQuote(executablePath),
-            "--cd",
-            ShellUtilities.shellQuote(workspacePath)
-        ]
-
-        let prompt = initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !prompt.isEmpty {
-            commandParts.append(ShellUtilities.shellQuote(prompt))
-        }
-
-        let command = commandParts.joined(separator: " ")
-        let scriptSource = """
-        tell application "Terminal"
-            activate
-            do script "\(ShellUtilities.appleScriptQuote(command))"
-        end tell
-        """
-        try execute(scriptSource)
+        let command = AgentCommandFactory.terminalCommand(
+            agent: agent,
+            executablePath: executablePath,
+            workspacePath: workspacePath,
+            prompt: initialPrompt
+        )
+        let source = template.render(command: command, cwd: workspacePath)
+        try execute(source)
     }
 
-    static func launchCommand(command: String, workspacePath: String) throws {
+    static func launchCommand(
+        command: String,
+        workspacePath: String,
+        template: TerminalTemplate
+    ) throws {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw CodexBarError.emptyCommand }
 
@@ -38,13 +32,8 @@ enum TerminalLauncher {
             "cd", ShellUtilities.shellQuote(workspacePath), "&&",
             trimmed
         ].joined(separator: " ")
-        let scriptSource = """
-        tell application "Terminal"
-            activate
-            do script "\(ShellUtilities.appleScriptQuote(terminalCommand))"
-        end tell
-        """
-        try execute(scriptSource)
+        let source = template.render(command: terminalCommand, cwd: workspacePath)
+        try execute(source)
     }
 
     private static func execute(_ source: String) throws {

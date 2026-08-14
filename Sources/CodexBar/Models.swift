@@ -70,9 +70,39 @@ enum ExecutionMode: String, Codable, CaseIterable, Identifiable {
     var explanation: String {
         switch self {
         case .background:
-            return "使用 codex exec，可同时运行多个任务；结果保留在任务中心。"
+            return "使用所选 Agent 后台执行，可同时运行多个任务；结果保留在任务中心。"
         case .terminal:
-            return "打开 Terminal 并启动 Codex TUI，适合连续对话与人工审批。"
+            return "使用所选终端打开所选 Agent 的 TUI，适合连续对话与人工审批。"
+        }
+    }
+}
+
+enum AgentTaskIntent: String, Codable, CaseIterable, Identifiable {
+    case execute
+    case plan
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .execute: return "执行"
+        case .plan: return "计划"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .execute: return "执行"
+        case .plan: return "计划"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .execute:
+            return "允许 Agent 按当前权限执行并修改工作区。"
+        case .plan:
+            return "只读分析并生成实施计划，不允许修改工作区；这不是 Codex TUI 的原生 Plan Mode。"
         }
     }
 }
@@ -106,7 +136,7 @@ enum HotKeyPreset: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum BackgroundTaskStatus: String, Equatable {
+enum BackgroundTaskStatus: String, Codable, Equatable {
     case running
     case succeeded
     case failed
@@ -133,7 +163,7 @@ enum BackgroundTaskStatus: String, Equatable {
     var isRunning: Bool { self == .running }
 }
 
-enum CodexOutputBlockKind: String, Equatable {
+enum CodexOutputBlockKind: String, Codable, Equatable {
     case agentMessage
     case reasoning
     case command
@@ -163,7 +193,7 @@ enum CodexOutputBlockKind: String, Equatable {
     }
 }
 
-enum CodexOutputBlockStatus: String, Equatable {
+enum CodexOutputBlockStatus: String, Codable, Equatable {
     case inProgress
     case completed
     case failed
@@ -185,7 +215,7 @@ enum CodexOutputBlockStatus: String, Equatable {
     }
 }
 
-struct CodexFileChange: Equatable {
+struct CodexFileChange: Codable, Equatable {
     let path: String
     let kind: String
 
@@ -207,12 +237,12 @@ struct CodexFileChange: Equatable {
     }
 }
 
-struct CodexTodo: Equatable {
+struct CodexTodo: Codable, Equatable {
     let text: String
     let completed: Bool
 }
 
-struct CodexTokenUsage: Equatable {
+struct CodexTokenUsage: Codable, Equatable {
     let inputTokens: Int?
     let cachedInputTokens: Int?
     let outputTokens: Int?
@@ -228,7 +258,7 @@ struct CodexTokenUsage: Equatable {
     }
 }
 
-struct CodexOutputBlock: Identifiable, Equatable {
+struct CodexOutputBlock: Identifiable, Codable, Equatable {
     let id: String
     var kind: CodexOutputBlockKind
     var title: String
@@ -270,6 +300,7 @@ enum CodexStreamMutation {
     case turnStarted
     case upsert(CodexOutputBlock)
     case append(CodexOutputBlock)
+    case appendText(String, to: String)
     case turnCompleted(CodexTokenUsage?)
     case turnFailed(String)
     case ignored
@@ -486,6 +517,8 @@ struct BackgroundTaskSession: Identifiable, Equatable {
     let prompt: String
     let workspaceName: String
     let workspacePath: String
+    let agent: AgentKind
+    let intent: AgentTaskIntent
     let createdAt: Date
     var finishedAt: Date?
     var threadID: String?
@@ -502,6 +535,8 @@ struct BackgroundTaskSession: Identifiable, Equatable {
         prompt: String,
         workspaceName: String,
         workspacePath: String,
+        agent: AgentKind = .codex,
+        intent: AgentTaskIntent = .execute,
         createdAt: Date = Date(),
         finishedAt: Date? = nil,
         threadID: String? = nil,
@@ -517,6 +552,8 @@ struct BackgroundTaskSession: Identifiable, Equatable {
         self.prompt = prompt
         self.workspaceName = workspaceName
         self.workspacePath = workspacePath
+        self.agent = agent
+        self.intent = intent
         self.createdAt = createdAt
         self.finishedAt = finishedAt
         self.threadID = threadID
@@ -533,14 +570,27 @@ struct BackgroundTaskSession: Identifiable, Equatable {
     }
 }
 
+struct TaskHistoryTranscript: Codable, Equatable {
+    var finishedAt: Date?
+    var status: BackgroundTaskStatus
+    var blocks: [CodexOutputBlock]
+    var usage: CodexTokenUsage?
+    var exitCode: Int32?
+    var errorMessage: String?
+}
+
 struct TaskHistoryItem: Identifiable, Codable, Equatable {
     let id: UUID
     let prompt: String
     let workspaceName: String
     let workspacePath: String
     let mode: ExecutionMode
+    let agent: AgentKind
+    let intent: AgentTaskIntent
     let createdAt: Date
     var succeeded: Bool?
+    var threadID: String?
+    var transcriptAvailable: Bool
 
     init(
         id: UUID = UUID(),
@@ -548,16 +598,59 @@ struct TaskHistoryItem: Identifiable, Codable, Equatable {
         workspaceName: String,
         workspacePath: String,
         mode: ExecutionMode,
+        agent: AgentKind = .codex,
+        intent: AgentTaskIntent = .execute,
         createdAt: Date = Date(),
-        succeeded: Bool? = nil
+        succeeded: Bool? = nil,
+        threadID: String? = nil,
+        transcriptAvailable: Bool = false
     ) {
         self.id = id
         self.prompt = prompt
         self.workspaceName = workspaceName
         self.workspacePath = workspacePath
         self.mode = mode
+        self.agent = agent
+        self.intent = intent
         self.createdAt = createdAt
         self.succeeded = succeeded
+        self.threadID = threadID
+        self.transcriptAvailable = transcriptAvailable
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, prompt, workspaceName, workspacePath, mode, agent, intent, createdAt, succeeded
+        case threadID, transcriptAvailable
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        prompt = try c.decode(String.self, forKey: .prompt)
+        workspaceName = try c.decode(String.self, forKey: .workspaceName)
+        workspacePath = try c.decode(String.self, forKey: .workspacePath)
+        mode = try c.decode(ExecutionMode.self, forKey: .mode)
+        agent = try c.decodeIfPresent(AgentKind.self, forKey: .agent) ?? .codex
+        intent = try c.decodeIfPresent(AgentTaskIntent.self, forKey: .intent) ?? .execute
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        succeeded = try c.decodeIfPresent(Bool.self, forKey: .succeeded)
+        threadID = try c.decodeIfPresent(String.self, forKey: .threadID)
+        transcriptAvailable = try c.decodeIfPresent(Bool.self, forKey: .transcriptAvailable) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(prompt, forKey: .prompt)
+        try c.encode(workspaceName, forKey: .workspaceName)
+        try c.encode(workspacePath, forKey: .workspacePath)
+        try c.encode(mode, forKey: .mode)
+        try c.encode(agent, forKey: .agent)
+        try c.encode(intent, forKey: .intent)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(succeeded, forKey: .succeeded)
+        try c.encode(threadID, forKey: .threadID)
+        try c.encode(transcriptAvailable, forKey: .transcriptAvailable)
     }
 }
 
@@ -566,6 +659,78 @@ struct PersistedPreferences: Codable {
     var selectedWorkspaceID: UUID?
     var executionMode: ExecutionMode
     var hotKeyPreset: HotKeyPreset
-    var customCodexPath: String
     var history: [TaskHistoryItem]
+    var selectedAgentID: AgentKind
+    var agentSelectionVersion: Int
+    var agentCustomPaths: [String: String]
+    var terminalTemplate: String
+    var chatGPTPromptPrefix: String
+
+    init(
+        workspaces: [Workspace],
+        selectedWorkspaceID: UUID?,
+        executionMode: ExecutionMode,
+        hotKeyPreset: HotKeyPreset,
+        history: [TaskHistoryItem],
+        selectedAgentID: AgentKind,
+        agentSelectionVersion: Int = 1,
+        agentCustomPaths: [String: String],
+        terminalTemplate: String,
+        chatGPTPromptPrefix: String
+    ) {
+        self.workspaces = workspaces
+        self.selectedWorkspaceID = selectedWorkspaceID
+        self.executionMode = executionMode
+        self.hotKeyPreset = hotKeyPreset
+        self.history = history
+        self.selectedAgentID = selectedAgentID
+        self.agentSelectionVersion = agentSelectionVersion
+        self.agentCustomPaths = agentCustomPaths
+        self.terminalTemplate = terminalTemplate
+        self.chatGPTPromptPrefix = chatGPTPromptPrefix
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workspaces, selectedWorkspaceID, executionMode, hotKeyPreset
+        case customCodexPath, history, selectedAgentID, agentSelectionVersion, agentCustomPaths, terminalTemplate
+        case chatGPTPromptPrefix, chatGPTPromptSuffix
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        workspaces = try c.decodeIfPresent([Workspace].self, forKey: .workspaces) ?? []
+        selectedWorkspaceID = try c.decodeIfPresent(UUID.self, forKey: .selectedWorkspaceID)
+        executionMode = try c.decodeIfPresent(ExecutionMode.self, forKey: .executionMode) ?? .background
+        hotKeyPreset = try c.decodeIfPresent(HotKeyPreset.self, forKey: .hotKeyPreset) ?? .optionSpace
+        history = try c.decodeIfPresent([TaskHistoryItem].self, forKey: .history) ?? []
+        selectedAgentID = try c.decodeIfPresent(AgentKind.self, forKey: .selectedAgentID) ?? .chatgpt
+        agentSelectionVersion = try c.decodeIfPresent(Int.self, forKey: .agentSelectionVersion) ?? 0
+        agentCustomPaths = try c.decodeIfPresent([String: String].self, forKey: .agentCustomPaths) ?? [:]
+        terminalTemplate = try c.decodeIfPresent(String.self, forKey: .terminalTemplate)
+            ?? TerminalTemplate.defaultSource
+        chatGPTPromptPrefix = try c.decodeIfPresent(String.self, forKey: .chatGPTPromptPrefix)
+            ?? c.decodeIfPresent(String.self, forKey: .chatGPTPromptSuffix)
+            ?? ChatGPTLauncher.defaultPromptPrefix
+
+        // Migrate the legacy single-codex path into the per-agent map.
+        let legacyCodexPath = try c.decodeIfPresent(String.self, forKey: .customCodexPath) ?? ""
+        let trimmed = legacyCodexPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, agentCustomPaths[AgentKind.codex.rawValue]?.isEmpty != false {
+            agentCustomPaths[AgentKind.codex.rawValue] = trimmed
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(workspaces, forKey: .workspaces)
+        try c.encode(selectedWorkspaceID, forKey: .selectedWorkspaceID)
+        try c.encode(executionMode, forKey: .executionMode)
+        try c.encode(hotKeyPreset, forKey: .hotKeyPreset)
+        try c.encode(history, forKey: .history)
+        try c.encode(selectedAgentID, forKey: .selectedAgentID)
+        try c.encode(agentSelectionVersion, forKey: .agentSelectionVersion)
+        try c.encode(agentCustomPaths, forKey: .agentCustomPaths)
+        try c.encode(terminalTemplate, forKey: .terminalTemplate)
+        try c.encode(chatGPTPromptPrefix, forKey: .chatGPTPromptPrefix)
+    }
 }

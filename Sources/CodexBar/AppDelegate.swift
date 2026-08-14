@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        setupMainMenu()
         panelController = LauncherPanelController(state: state)
         setupStatusItem()
         registerHotKey(state.hotKeyPreset)
@@ -41,6 +42,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.statusMessage = error.localizedDescription
             panelController?.show()
         }
+    }
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu(title: "CodexBar")
+        appMenu.addItem(withTitle: "关于 CodexBar", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出 CodexBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.keyEquivalentModifierMask = [.command]
+        appMenu.addItem(quit)
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // Even though CodexBar is an accessory/panel app, a real Edit menu is
+        // important: AppKit routes these nil-target actions through the first
+        // responder so NSTextView, SwiftUI TextEditor and selectable output all
+        // get standard macOS editing behavior.
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(editItem("撤销", action: Selector(("undo:")), key: "z"))
+        let redo = editItem("重做", action: Selector(("redo:")), key: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(editItem("剪切", action: Selector(("cut:")), key: "x"))
+        editMenu.addItem(editItem("复制", action: Selector(("copy:")), key: "c"))
+        editMenu.addItem(editItem("粘贴", action: Selector(("paste:")), key: "v"))
+        editMenu.addItem(NSMenuItem(title: "删除", action: Selector(("delete:")), keyEquivalent: ""))
+        editMenu.addItem(.separator())
+        editMenu.addItem(editItem("全选", action: Selector(("selectAll:")), key: "a"))
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        NSApp.mainMenu = mainMenu
+    }
+
+    private func editItem(_ title: String, action: Selector, key: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.keyEquivalentModifierMask = [.command]
+        item.target = nil
+        return item
     }
 
     private func setupStatusItem() {

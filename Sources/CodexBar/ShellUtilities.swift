@@ -17,7 +17,7 @@ enum ShellUtilities {
 }
 
 enum CodexBarError: LocalizedError {
-    case codexNotFound
+    case agentNotFound(AgentKind)
     case invalidWorkspace
     case emptyPrompt
     case emptyCommand
@@ -29,8 +29,8 @@ enum CodexBarError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .codexNotFound:
-            return "没有找到 Codex CLI。请先在终端确认 `codex` 可用，或在设置中指定可执行文件路径。"
+        case .agentNotFound(let agent):
+            return "没有找到 \(agent.title) CLI。请先在终端确认 `\(agent.commandName)` 可用，或在设置中指定可执行文件路径。"
         case .invalidWorkspace:
             return "所选工作目录不存在，请重新添加。"
         case .emptyPrompt:
@@ -40,11 +40,11 @@ enum CodexBarError: LocalizedError {
         case .processAlreadyRunning:
             return "已有任务正在执行。"
         case .processLaunchFailed(let message):
-            return "Codex 启动失败：\(message)"
+            return "Agent 启动失败：\(message)"
         case .commandLaunchFailed(let message):
             return "命令启动失败：\(message)"
         case .terminalLaunchFailed(let message):
-            return "Terminal 启动失败：\(message)"
+            return "终端启动失败：\(message)"
         case .hotKeyRegistrationFailed(let status):
             return "全局快捷键注册失败（\(status)），可能与系统或其他应用快捷键冲突。"
         }

@@ -1,9 +1,33 @@
+import AppKit
 import SwiftUI
+
+/// 「操作」页在浏览模式下的轻量过滤 chips。
+private enum BrowseFilter: String, CaseIterable, Identifiable {
+    case all, quickRun, favorites
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "全部"
+        case .quickRun: return "一键执行"
+        case .favorites: return "收藏"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "square.grid.2x2"
+        case .quickRun: return "bolt.fill"
+        case .favorites: return "star.fill"
+        }
+    }
+}
 
 struct LocalActionsView: View {
     @ObservedObject var state: AppState
 
-    @State private var scope: LocalActionScope = .available
+    @State private var browseFilter: BrowseFilter = .all
     @State private var query = ""
     @State private var pendingAction: LocalAction?
     @State private var editingAction: LocalAction?
@@ -11,24 +35,40 @@ struct LocalActionsView: View {
     @FocusState private var searchFocused: Bool
 
     private var displayedActions: [LocalAction] {
-        state.localActions(scope: scope, matching: query)
+        let base = state.searchLocalActions(matching: query)
+        switch browseFilter {
+        case .all: return base
+        case .quickRun: return base.filter(\.isQuickRunnable)
+        case .favorites: return base.filter { state.localActionFavoriteIDs.contains($0.id) }
+        }
+    }
+
+    /// manage 模式的三个分组，互斥划分避免同一脚本重复出现。
+    private var reviewActions: [LocalAction] { state.reviewLocalActions }
+    private var publishedActions: [LocalAction] {
+        state.localActions.filter { $0.published && !$0.quickRunNeedsReview }
+    }
+    private var pendingActions: [LocalAction] {
+        state.localActions.filter { !$0.published }
     }
 
     var body: some View {
         ZStack {
             LocalActionsBackdrop()
 
-            VStack(spacing: 0) {
-                header
-
-                VStack(spacing: 14) {
+            VStack(spacing: 14) {
+                modePicker
+                if state.localActionsMode == .browse {
                     searchBar
-                    scopePicker
+                    filterChips
                     actionList
-                    runResult
+                } else {
+                    manageIntro
+                    manageList
                 }
-                .padding(18)
+                runResult
             }
+            .padding(18)
         }
         .alert(item: $pendingAction) { action in
             confirmationAlert(for: action)
@@ -40,77 +80,6 @@ struct LocalActionsView: View {
                 onSave: { state.saveLocalActionCustomization($0) },
                 onRemove: { state.removeLocalActionCustomization(for: action) }
             )
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 13) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor, Color.blue.opacity(0.82)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .shadow(color: Color.accentColor.opacity(0.28), radius: 12, y: 5)
-
-                Image(systemName: "bolt.horizontal.circle.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 38, height: 38)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Text("项目操作")
-                        .font(.title3.weight(.semibold))
-
-                    if state.availableLocalActions.count > 0 {
-                        Text("\(state.availableLocalActions.count) 可用")
-                            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.accentColor)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.accentColor.opacity(0.11), in: Capsule())
-                    }
-                }
-
-                Text(state.selectedWorkspace.map { "\($0.name) · 从少量明确操作开始，而不是展示全部脚本" }
-                     ?? "请先选择工作目录")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            if state.isDiscoveringLocalActions {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("扫描中")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Button {
-                state.refreshLocalActions()
-            } label: {
-                Label("重新扫描", systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(LocalActionToolbarButtonStyle())
-            .disabled(state.selectedWorkspace == nil || state.isDiscoveringLocalActions)
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 80)
-        .background(.thinMaterial)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(.primary.opacity(0.07))
-                .frame(height: 1)
         }
     }
 
@@ -159,63 +128,82 @@ struct LocalActionsView: View {
         .animation(.easeOut(duration: 0.18), value: searchFocused)
     }
 
-    private var scopePicker: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 4) {
-                ForEach(LocalActionScope.allCases) { item in
-                    let selected = scope == item
-                    Button {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            scope = item
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: item.systemImage)
-                                .font(.system(size: 10.5, weight: .semibold))
-                            Text(item.title)
-                                .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
-                            Text("\(scopeCount(item))")
-                                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(
-                                    selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.045),
-                                    in: Capsule()
-                                )
-                        }
-                        .foregroundStyle(selected ? Color.primary : Color.secondary)
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .background {
-                            if selected {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(.regularMaterial)
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(Color.accentColor.opacity(0.07))
-                                    }
-                                    .shadow(color: .black.opacity(0.09), radius: 4, y: 2)
-                            }
+    private var modePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(LocalActionsMode.allCases) { mode in
+                let selected = state.localActionsMode == mode
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        state.localActionsMode = mode
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: mode.systemImage)
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text(mode.title)
+                            .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                    }
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 26)
+                    .background {
+                        if selected {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(.regularMaterial)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(Color.accentColor.opacity(0.08))
+                                }
+                                .shadow(color: .black.opacity(0.09), radius: 4, y: 2)
                         }
                     }
-                    .buttonStyle(.plain)
                 }
+                .buttonStyle(.plain)
             }
-            .padding(4)
-            .glassSurface(cornerRadius: 12, tint: Color.primary.opacity(0.01), shadowEnabled: false)
+        }
+        .padding(3)
+        .glassSurface(cornerRadius: 11, tint: Color.primary.opacity(0.01), shadowEnabled: false)
+    }
 
+    private var filterChips: some View {
+        HStack(spacing: 8) {
+            ForEach(BrowseFilter.allCases) { item in
+                let selected = browseFilter == item
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        browseFilter = item
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: item.systemImage)
+                            .font(.system(size: 9.5, weight: .semibold))
+                        Text(item.title)
+                            .font(.system(size: 11, weight: selected ? .semibold : .medium))
+                    }
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 24)
+                    .background {
+                        if selected {
+                            Capsule().fill(.regularMaterial)
+                                .overlay(Capsule().fill(Color.accentColor.opacity(0.08)))
+                        } else {
+                            Capsule().fill(.ultraThinMaterial)
+                        }
+                    }
+                    .overlay {
+                        Capsule().stroke(
+                            selected ? Color.accentColor.opacity(0.30) : .primary.opacity(0.06),
+                            lineWidth: 1
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+            }
             Spacer()
-
-            Label("扫描到 \(state.localActions.count) 个脚本", systemImage: "doc.text.magnifyingglass")
+            Label("\(state.localActions.count) 个脚本", systemImage: "doc.text.magnifyingglass")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    Capsule().stroke(.primary.opacity(0.07), lineWidth: 1)
-                }
         }
     }
 
@@ -237,15 +225,17 @@ struct LocalActionsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if displayedActions.isEmpty {
             emptyState(
-                icon: scope == .discovered ? "doc.badge.ellipsis" : "bolt.slash",
-                title: emptyTitle,
-                message: emptyMessage
+                icon: "bolt.slash",
+                title: browseEmptyTitle,
+                message: browseEmptyMessage,
+                actionTitle: query.isEmpty ? "去脚本管理" : nil,
+                action: query.isEmpty ? { state.localActionsMode = .manage } : nil
             )
         } else {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     ForEach(displayedActions) { action in
-                        actionRow(action)
+                        browseRow(action)
                     }
                 }
                 .padding(.vertical, 1)
@@ -254,10 +244,9 @@ struct LocalActionsView: View {
         }
     }
 
-    private func actionRow(_ action: LocalAction) -> some View {
+    private func browseRow(_ action: LocalAction) -> some View {
         let accent = actionAccent(action)
         let hovering = hoveredActionID == action.id
-        let favorite = state.localActionFavoriteIDs.contains(action.id)
 
         return HStack(spacing: 13) {
             ZStack {
@@ -286,19 +275,7 @@ struct LocalActionsView: View {
                         .font(.system(size: 13.5, weight: .semibold))
                         .lineLimit(1)
 
-                    if !action.published {
-                        LocalActionBadge(title: "未发布", systemImage: "eye.slash", color: .gray)
-                    }
-
-                    if action.isCustomized {
-                        LocalActionBadge(title: "已整理", systemImage: "checkmark.seal.fill", color: .teal)
-                    }
-
-                    if action.isQuickRunnable {
-                        LocalActionBadge(title: "一键执行", systemImage: "bolt.fill", color: .green)
-                    } else if action.quickRunNeedsReview {
-                        LocalActionBadge(title: "脚本已更新", systemImage: "arrow.triangle.2.circlepath", color: .orange)
-                    }
+                    browseBadge(action)
                 }
 
                 Text(action.primaryUsage.isEmpty ? "尚未补充适用场景" : action.primaryUsage)
@@ -326,31 +303,6 @@ struct LocalActionsView: View {
 
             Spacer(minLength: 8)
 
-            LocalActionBadge(
-                title: action.risk.title,
-                systemImage: action.risk.systemImage,
-                color: action.risk.tintColor
-            )
-
-            Button {
-                editingAction = action
-            } label: {
-                Label(
-                    action.isCustomized ? "编辑" : "整理",
-                    systemImage: action.isCustomized ? "slider.horizontal.3" : "wand.and.stars"
-                )
-            }
-            .buttonStyle(LocalActionCompactButtonStyle(tint: action.isCustomized ? .teal : .gray))
-            .help(action.isCustomized ? "编辑操作说明" : "整理为操作")
-
-            Button {
-                state.toggleLocalActionFavorite(action)
-            } label: {
-                Image(systemName: favorite ? "star.fill" : "star")
-            }
-            .buttonStyle(LocalActionIconButtonStyle(tint: favorite ? .orange : .gray))
-            .help(favorite ? "取消收藏" : "收藏")
-
             Button {
                 requestRun(action)
             } label: {
@@ -370,6 +322,11 @@ struct LocalActionsView: View {
             .buttonStyle(LocalActionRunButtonStyle(tint: accent))
             .disabled(state.runningLocalActionID != nil)
             .help(action.isQuickRunnable ? "立即执行" : "查看命令并确认")
+
+            if hovering {
+                rowMenu(action)
+                    .transition(.opacity)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -387,6 +344,54 @@ struct LocalActionsView: View {
                 hoveredActionID = nil
             }
         }
+    }
+
+    @ViewBuilder
+    private func browseBadge(_ action: LocalAction) -> some View {
+        if action.quickRunNeedsReview {
+            LocalActionBadge(title: "脚本已更新", systemImage: "arrow.triangle.2.circlepath", color: .orange)
+        } else if !action.published {
+            LocalActionBadge(title: "未发布", systemImage: "eye.slash", color: .gray)
+        } else if action.isQuickRunnable {
+            LocalActionBadge(title: "一键执行", systemImage: "bolt.fill", color: .green)
+        }
+    }
+
+    private func rowMenu(_ action: LocalAction) -> some View {
+        let favorite = state.localActionFavoriteIDs.contains(action.id)
+        return Menu {
+            Button {
+                editingAction = action
+            } label: {
+                Label(action.isCustomized ? "编辑" : "整理", systemImage: action.isCustomized ? "slider.horizontal.3" : "wand.and.stars")
+            }
+            Button {
+                state.toggleLocalActionFavorite(action)
+            } label: {
+                Label(favorite ? "取消收藏" : "收藏", systemImage: favorite ? "star.slash" : "star")
+            }
+            Divider()
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: action.scriptPath)])
+            } label: {
+                Label("在 Finder 中显示", systemImage: "folder")
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(action.commandPreview, forType: .string)
+            } label: {
+                Label("复制命令", systemImage: "doc.on.doc")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("更多操作")
     }
 
     @ViewBuilder
@@ -454,7 +459,196 @@ struct LocalActionsView: View {
         }
     }
 
-    private func emptyState(icon: String, title: String, message: String) -> some View {
+    private var manageIntro: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            Text("自动发现 → 整理发布 → 一键执行。把高频脚本整理成带说明的操作，低风险可设为一键执行。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer()
+            Button {
+                state.refreshLocalActions()
+            } label: {
+                Label(
+                    state.isDiscoveringLocalActions ? "扫描中…" : "重新扫描",
+                    systemImage: "arrow.clockwise"
+                )
+            }
+            .buttonStyle(LocalActionCompactButtonStyle(tint: .accentColor))
+            .disabled(state.isDiscoveringLocalActions)
+        }
+        .padding(11)
+        .glassSurface(cornerRadius: 12, tint: Color.primary.opacity(0.01), shadowEnabled: false)
+    }
+
+    @ViewBuilder
+    private var manageList: some View {
+        if state.localActions.isEmpty {
+            emptyState(
+                icon: "doc.text.magnifyingglass",
+                title: "还没有发现脚本",
+                message: "CodexBar 会扫描当前项目的 Scripts、scripts、Tools 和 tools 目录，以及 .codexbar/actions.json 中发布的脚本。",
+                actionTitle: "返回操作",
+                action: { state.localActionsMode = .browse }
+            )
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if !reviewActions.isEmpty {
+                        manageGroup(
+                            title: "需复查",
+                            systemImage: "arrow.triangle.2.circlepath",
+                            color: .orange,
+                            actions: reviewActions
+                        )
+                    }
+                    if !publishedActions.isEmpty {
+                        manageGroup(
+                            title: "已发布",
+                            systemImage: "bolt.fill",
+                            color: .accentColor,
+                            actions: publishedActions
+                        )
+                    }
+                    if !pendingActions.isEmpty {
+                        manageGroup(
+                            title: "待整理",
+                            systemImage: "doc.text.magnifyingglass",
+                            color: .gray,
+                            actions: pendingActions
+                        )
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+            .frame(maxHeight: state.localActionRunOutput.isEmpty ? .infinity : 300)
+        }
+    }
+
+    private func manageGroup(title: String, systemImage: String, color: Color, actions: [LocalAction]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(color)
+                .padding(.horizontal, 4)
+
+            ForEach(actions) { action in
+                manageRow(action)
+            }
+        }
+    }
+
+    private func manageRow(_ action: LocalAction) -> some View {
+        let accent = actionAccent(action)
+        let hovering = hoveredActionID == action.id
+
+        return HStack(spacing: 11) {
+            Image(systemName: action.published ? actionIcon(action) : "doc.text.magnifyingglass")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(width: 26)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(action.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    if action.quickRunNeedsReview {
+                        LocalActionBadge(title: "需复查", systemImage: "arrow.triangle.2.circlepath", color: .orange)
+                    } else if !action.published {
+                        LocalActionBadge(title: "待整理", systemImage: "eye.slash", color: .gray)
+                    } else if action.isCustomized {
+                        LocalActionBadge(title: "已整理", systemImage: "checkmark.seal.fill", color: .teal)
+                    }
+                }
+                Text(action.relativePath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                editingAction = action
+            } label: {
+                Label(
+                    action.isCustomized ? "编辑" : "整理",
+                    systemImage: action.isCustomized ? "slider.horizontal.3" : "wand.and.stars"
+                )
+            }
+            .buttonStyle(LocalActionCompactButtonStyle(tint: action.isCustomized ? .teal : .gray))
+            .help(action.isCustomized ? "编辑操作说明" : "整理为操作")
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: action.scriptPath)])
+            } label: {
+                Image(systemName: "folder")
+            }
+            .buttonStyle(LocalActionIconButtonStyle(tint: .gray))
+            .help("在 Finder 中显示")
+
+            if hovering {
+                manageMenu(action)
+                    .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .glassSurface(
+            cornerRadius: 12,
+            tint: accent.opacity(hovering ? 0.07 : 0.02),
+            shadowEnabled: hovering
+        )
+        .animation(.easeOut(duration: 0.16), value: hovering)
+        .onHover { isHovering in
+            if isHovering {
+                hoveredActionID = action.id
+            } else if hoveredActionID == action.id {
+                hoveredActionID = nil
+            }
+        }
+    }
+
+    private func manageMenu(_ action: LocalAction) -> some View {
+        let favorite = state.localActionFavoriteIDs.contains(action.id)
+        return Menu {
+            Button {
+                state.toggleLocalActionFavorite(action)
+            } label: {
+                Label(favorite ? "取消收藏" : "收藏", systemImage: favorite ? "star.slash" : "star")
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(action.commandPreview, forType: .string)
+            } label: {
+                Label("复制命令", systemImage: "doc.on.doc")
+            }
+            if action.isCustomized {
+                Divider()
+                Button(role: .destructive) {
+                    state.removeLocalActionCustomization(for: action)
+                } label: {
+                    Label("移除整理", systemImage: "trash")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("更多操作")
+    }
+
+    private func emptyState(icon: String, title: String, message: String, actionTitle: String? = nil, action: (() -> Void)? = nil) -> some View {
         VStack(spacing: 11) {
             ZStack {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -478,38 +672,36 @@ struct LocalActionsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
+                    .padding(.top, 4)
+            }
         }
         .padding(26)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glassSurface(cornerRadius: 18, tint: Color.accentColor.opacity(0.018), shadowEnabled: false)
     }
 
-    private var emptyTitle: String {
+    private var browseEmptyTitle: String {
         if !query.isEmpty { return "没有找到匹配的操作" }
-        switch scope {
-        case .available: return "当前项目还没有可用操作"
+        switch browseFilter {
+        case .all: return "当前项目还没有可用操作"
+        case .quickRun: return "还没有可一键执行的操作"
         case .favorites: return "还没有收藏操作"
-        case .recent: return "还没有执行记录"
-        case .discovered: return "没有发现脚本"
         }
     }
 
-    private var emptyMessage: String {
+    private var browseEmptyMessage: String {
         if !query.isEmpty { return "可以尝试脚本名称、适用场景或问题描述。" }
-        switch scope {
-        case .available:
-            return "在 .codexbar/actions.json 中发布操作，或到“已发现”把真正需要的脚本整理为操作。"
+        switch browseFilter {
+        case .all:
+            return "在 .codexbar/actions.json 中发布操作，或到「脚本管理」把真正需要的脚本整理为操作。"
+        case .quickRun:
+            return "在整理操作时开启「一键执行」，低风险命令就能从菜单栏直接运行。"
         case .favorites:
             return "收藏只保留真正会反复使用的操作，避免列表再次变成脚本仓库。"
-        case .recent:
-            return "执行过的项目操作会在这里保留，低风险操作可以从菜单栏再次运行。"
-        case .discovered:
-            return "CodexBar 只扫描当前项目的 Scripts、scripts、Tools 和 tools 目录。"
         }
-    }
-
-    private func scopeCount(_ item: LocalActionScope) -> Int {
-        state.localActions(scope: item, matching: "").count
     }
 
     private func actionAccent(_ action: LocalAction) -> Color {
@@ -808,7 +1000,7 @@ private struct LocalActionsBackdrop: View {
     }
 }
 
-private struct GlassSurfaceModifier: ViewModifier {
+struct GlassSurfaceModifier: ViewModifier {
     let cornerRadius: CGFloat
     let tint: Color
     let shadowEnabled: Bool
@@ -845,7 +1037,7 @@ private struct GlassSurfaceModifier: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     func glassSurface(
         cornerRadius: CGFloat,
         tint: Color = .clear,
@@ -877,23 +1069,6 @@ private struct LocalActionBadge: View {
                 Capsule().stroke(color.opacity(0.14), lineWidth: 1)
             }
             .fixedSize()
-    }
-}
-
-private struct LocalActionToolbarButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11.5, weight: .semibold))
-            .foregroundStyle(Color.primary)
-            .padding(.horizontal, 11)
-            .frame(height: 30)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(.primary.opacity(0.09), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(configuration.isPressed ? 0.02 : 0.07), radius: 5, y: 2)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }
 }
 
@@ -955,26 +1130,5 @@ private struct LocalActionRunButtonStyle: ButtonStyle {
             }
             .shadow(color: tint.opacity(configuration.isPressed ? 0.08 : 0.24), radius: 8, y: 3)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
-    }
-}
-
-private extension LocalActionScope {
-    var systemImage: String {
-        switch self {
-        case .available: return "bolt.fill"
-        case .favorites: return "star.fill"
-        case .recent: return "clock.arrow.circlepath"
-        case .discovered: return "doc.text.magnifyingglass"
-        }
-    }
-}
-
-private extension LocalActionRisk {
-    var tintColor: Color {
-        switch self {
-        case .low: return .green
-        case .medium: return .orange
-        case .high: return .red
-        }
     }
 }

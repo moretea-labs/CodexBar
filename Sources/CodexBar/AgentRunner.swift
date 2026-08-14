@@ -1,12 +1,12 @@
 import Foundation
 
-final class CodexRunner {
+final class AgentRunner {
     private var process: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
     private let lock = NSLock()
     private let fileReadLock = NSLock()
-    private let streamQueue = DispatchQueue(label: "com.greyson.codexbar.codex-output")
+    private let streamQueue = DispatchQueue(label: "com.greyson.codexbar.agent-output")
     private var stdoutBuffer = Data()
     private var stderrBuffer = Data()
 
@@ -17,9 +17,9 @@ final class CodexRunner {
     }
 
     func start(
-        executablePath: String,
+        shellCommand: String,
+        stdinPrompt: String?,
         workspacePath: String,
-        prompt: String,
         onEventLine: @escaping (String) -> Void,
         onDiagnostic: @escaping (String) -> Void,
         onCompletion: @escaping (Result<Int32, Error>) -> Void
@@ -39,22 +39,9 @@ final class CodexRunner {
         let stderr = Pipe()
         let stdin = Pipe()
 
-        // Use JSONL output so the UI can render agent messages, commands,
-        // file changes, plans and errors as distinct timeline blocks.
-        let command = [
-            "exec",
-            ShellUtilities.shellQuote(executablePath),
-            "--ask-for-approval", "never",
-            "exec",
-            "--cd", ShellUtilities.shellQuote(workspacePath),
-            "--sandbox", "workspace-write",
-            "--json",
-            "-"
-        ].joined(separator: " ")
-
         task.executableURL = URL(fileURLWithPath: "/bin/zsh")
         task.currentDirectoryURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
-        task.arguments = ["-lic", command]
+        task.arguments = ["-lic", shellCommand]
         task.standardOutput = stdout
         task.standardError = stderr
         task.standardInput = stdin
@@ -146,7 +133,7 @@ final class CodexRunner {
             stdoutPipe = stdout
             stderrPipe = stderr
 
-            if let data = prompt.data(using: .utf8) {
+            if let stdinPrompt, let data = stdinPrompt.data(using: .utf8) {
                 stdin.fileHandleForWriting.write(data)
             }
             try? stdin.fileHandleForWriting.close()

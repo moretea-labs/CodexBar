@@ -1,7 +1,13 @@
 import Foundation
 
 final class ExecutableLocator {
-    static func locateCodex(customPath: String, completion: @escaping (String?) -> Void) {
+    /// Resolves an agent executable path. A user-supplied path wins when it is
+    /// executable; otherwise the command is looked up on PATH via a login shell.
+    static func locateExecutable(
+        name: String,
+        customPath: String,
+        completion: @escaping (String?) -> Void
+    ) {
         let trimmed = customPath.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty,
            FileManager.default.isExecutableFile(atPath: trimmed) {
@@ -13,7 +19,7 @@ final class ExecutableLocator {
             let process = Process()
             let output = Pipe()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-lic", "command -v codex 2>/dev/null"]
+            process.arguments = ["-lic", "command -v \(name) 2>/dev/null"]
             process.standardOutput = output
             process.standardError = Pipe()
 

@@ -23,7 +23,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>CodexBar 需要控制 Terminal，以便在所选工作目录中启动 Codex 交互会话。</string>
+	<string>CodexBar 需要控制所选终端和 Google Chrome，以便启动 Agent 会话，并在日常浏览器中创建 ChatGPT 新会话。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSPrincipalClass</key>

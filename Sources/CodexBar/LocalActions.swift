@@ -16,13 +16,6 @@ enum LocalActionRisk: String, Codable, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .low: return "checkmark.shield"
-        case .medium: return "exclamationmark.shield"
-        case .high: return "exclamationmark.triangle.fill"
-        }
-    }
 }
 
 enum LocalActionSource: String, Codable, Hashable {
@@ -43,20 +36,25 @@ enum LocalActionSource: String, Codable, Hashable {
     }
 }
 
-enum LocalActionScope: String, CaseIterable, Identifiable {
-    case available
-    case favorites
-    case recent
-    case discovered
+/// Two mental models inside the actions section: browse/run published
+/// operations vs. maintain the discovered script catalog.
+enum LocalActionsMode: String, CaseIterable, Identifiable {
+    case browse
+    case manage
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .available: return "可用"
-        case .favorites: return "收藏"
-        case .recent: return "最近"
-        case .discovered: return "已发现"
+        case .browse: return "操作"
+        case .manage: return "管理"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .browse: return "bolt.fill"
+        case .manage: return "slider.horizontal.3"
         }
     }
 }
