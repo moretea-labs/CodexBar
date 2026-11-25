@@ -1,0 +1,185 @@
+# repo-harness ChatGPT Controller Setup
+
+## Purpose
+
+The `controller` profile makes ChatGPT the project control plane. ChatGPT can inspect code and documents, maintain durable Issues and dependency-aware Tasks, apply bounded direct edits, publish Issues to GitHub Projects, dispatch short local Codex/Claude runs or visible GitHub Copilot cloud sessions, and review the resulting state. Repository files remain the source of truth; chat history is not required for recovery.
+
+## Prerequisites
+
+- A repo-harness adopted repository.
+- Bun and the `repo-harness` CLI on PATH.
+- Codex and/or Claude CLI installed for delegated local execution.
+- GitHub CLI `gh` authenticated when GitHub Issues, Projects, or Copilot cloud sessions are used.
+- ChatGPT workspace access to Developer Mode and custom MCP Connectors.
+- A public HTTPS `/mcp` endpoint for ChatGPT.
+
+For a shared editable installation, keep the repo-harness checkout at a stable path such as `~/DevProjects/repo-harness`, run `bun install`, and reinstall the CLI after pulling updates.
+
+## One-time setup
+
+```bash
+repo-harness mcp setup chatgpt --repo .
+repo-harness mcp keepalive --repo . --profile controller --enable-dev-runner --dev-runner-agents codex,claude --tunnel quick
+```
+
+The `controller` profile starts a localhost-only visual controller at `http://127.0.0.1:8766/` by default. It is separate from the public MCP tunnel. Use it to launch ready Tasks, create small Codex/Claude sessions, approve local Jobs, inspect live logs, and run named checks. Add `--open-local-ui` to open it automatically, or `--no-local-ui` to disable it.
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8765/health
+repo-harness mcp doctor --repo .
+```
+
+The generated ignored file `.repo-harness/mcp.local.json` stores the default `controller` profile, allowed local agents, timeout, endpoint, and `chatgpt.serverName`. OAuth credentials stay in `.repo-harness/mcp.oauth.json`; the bearer fallback stays in ignored token files.
+
+Repository-specific MCP access rules may be added in `.repo-harness/mcp.policy.json`. Repository policy can narrow access, but immutable secret, credential, Git-internal, and build-output denies remain enforced.
+
+## Stable endpoint
+
+Use this Connector URL:
+
+```text
+<https-tunnel-url>/mcp
+```
+
+Quick tunnels are useful for one-off smoke tests, but their URL may change. For routine use, prefer a named tunnel:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create repo-harness-mcp
+cloudflared tunnel route dns repo-harness-mcp <named-tunnel-host>
+repo-harness mcp keepalive --repo . --profile controller --enable-dev-runner --dev-runner-agents codex,claude --tunnel named --cloudflare-tunnel-name repo-harness-mcp --public-endpoint https://<named-tunnel-host>/mcp
+```
+
+Regenerate this guide with the stable endpoint:
+
+```bash
+repo-harness mcp setup chatgpt --repo . --endpoint <https-url>/mcp
+```
+
+The real endpoint stays in ignored local config; the tracked guide stays placeholder-only. The OAuth discovery endpoint includes `oauth-protected-resource` metadata.
+
+## Create the ChatGPT Connector
+
+1. Open ChatGPT Settings and enable Developer Mode.
+2. Create a custom Connector using the server name from `.repo-harness/mcp.local.json` under `chatgpt.serverName`.
+3. Paste the public HTTPS URL ending in `/mcp`.
+4. Configure Connector authentication as OAuth. A bearer token remains available only as a local fallback for non-ChatGPT clients; start such a client with `--auth bearer` when required.
+5. Scan tools and authorize with the passphrase from `.repo-harness/mcp.oauth.json`.
+6. Keep write confirmations enabled.
+7. Re-scan tools after updating repo-harness tool schemas.
+
+## Verify the loaded tool surface
+
+Call `controller_capabilities` from ChatGPT. It should report `controller-chatgpt-bridge-v8` and list the Issue Launcher, GitHub session, Run inspection, bounded edit, and Verification Gate tools. If only legacy planning tools are visible, refresh or recreate the Connector so ChatGPT reloads the MCP tool schema.
+
+## Daily workflow
+
+Start a new ChatGPT conversation with:
+
+```text
+Use repo-harness as the project controller. Read project_snapshot, current Issues, active Runs, and relevant code before deciding the next action. Keep work in small dependency-aware Tasks. Do not dispatch one large Issue as one agent run.
+```
+
+Typical requests:
+
+```text
+Analyze this requirement and the current implementation. Create or update an Issue and split it into executable Tasks. Do not execute yet.
+```
+
+```text
+Inspect readiness for this Issue, publish it to GitHub when collaboration is useful, and launch at most two independent Tasks. Review every local diff or GitHub pull request and record verification evidence before accepting it.
+```
+
+```text
+Read the project board and failed Runs. Retry only the smallest failed Task, or re-plan the Issue when the original split is wrong.
+```
+
+```text
+This is a small local fix. Open a bounded edit session, modify only the named files, inspect the Git diff, run focused checks, and finalize or rollback the edit.
+```
+
+## Persistent model
+
+```text
+Issue
+  -> Task T1
+       -> Run 1
+       -> Run 2 (retry)
+  -> Task T2
+  -> Task T3
+```
+
+- Issues and Tasks are stored under `tasks/issues/` as JSON plus readable Markdown.
+- Agent jobs, logs, edit backups, and worktrees are stored under ignored `.ai/harness/` runtime directories.
+- A completed isolated agent Run moves its Task to review. ChatGPT must inspect it with `get_task_diff`, integrate it with `integrate_task_run`, record named-check and criterion evidence through `verify_task`, then explicitly accept it or request changes.
+- Dependency completion unlocks later Tasks automatically.
+- Any new ChatGPT conversation can recover state through `project_snapshot` and `get_project_board`.
+
+## Capability boundaries
+
+- `observe`: inspect repository state, search code, and read bounded file ranges.
+- `manage`: create Issues, dynamically split Tasks, inspect launch readiness, publish to GitHub Issues/Projects, update status, and maintain project documents.
+- `edit`: use a bounded edit session with allowed paths, SHA preconditions, change limits, backups, and rollback.
+- `execute`: dispatch a ready Task to an allowed local agent in an isolated worktree or to a visible GitHub Copilot cloud session.
+- Protected operations such as secrets, Git internals, package lockfiles, CI workflow changes, commits, merges, and pushes are not default controller actions.
+
+The legacy planner/orchestrator handoff remains available for compatibility. When explicitly enabled, `run_agent_goal` reads only `.ai/harness/handoff/codex-goal.md`; new work should prefer `dispatch_task` and persistent Task Runs.
+
+## Dev Mode Agent Runner
+
+Local Agent execution is opt-in. GitHub cloud sessions use authenticated `gh` and do not require the local dev runner:
+
+```bash
+repo-harness mcp serve --repo . --transport http --host 127.0.0.1 --port 8765 --profile controller --enable-dev-runner --dev-runner-agents codex,claude
+```
+
+The runner defaults to 60 minutes per local Task and supports explicit values up to 12 hours. Requested values are validated and persisted unchanged; an invalid value fails instead of silently falling back to 120 seconds.
+
+The runner:
+
+- accepts only configured `codex` or `claude` agents;
+- creates one persistent Run per Task;
+- normally creates an isolated Git worktree;
+- records prompt, process metadata, streaming stdout/stderr, structured events, and result under `.ai/harness/jobs/`;
+- never exposes arbitrary shell input through MCP;
+- does not commit, merge, or push automatically.
+
+Watch local or GitHub execution from a terminal:
+
+```bash
+repo-harness controller runs --repo .
+repo-harness controller watch <RUN-ID> --repo . --log
+```
+
+The `--log` view streams local Codex/Claude output while the process is running and polls GitHub cloud-session logs when available.
+
+Use `repo-harness mcp keepalive` when the local server and tunnel should be supervised together.
+
+## Local Codex MCP
+
+Configure Codex to read repo-harness state:
+
+```bash
+repo-harness mcp setup codex --repo . --scope project
+```
+
+The executor profile remains read-oriented. Controller-dispatched Codex work is scoped by the generated Task prompt and worktree.
+
+## Security
+
+- Keep OAuth passphrases, bearer tokens, tunnel tokens, `~/.codex/auth.json`, and other credentials out of chat and Git.
+- Keep the MCP server bound to loopback; expose it only through the authenticated tunnel.
+- Do not remove immutable hard-deny patterns in order to make a Task pass.
+- Review every completed local diff or GitHub pull request and record passing Verification Gate evidence before accepting a Task.
+- Use the smallest allowed path set and focused checks for direct edits.
+
+## Troubleshooting
+
+- ChatGPT cannot connect: verify the HTTPS tunnel ends in `/mcp` and local `/health` responds.
+- ChatGPT auth loops: retry authorization and inspect `.repo-harness/mcp.oauth.json`; do not paste the passphrase into chat.
+- Tool scan misses tools: open the local visual controller and compare its runtime fingerprint with `controller-chatgpt-bridge-v8`; restart keepalive, then rescan or recreate the versioned Connector.
+- Codex cannot see the MCP server: rerun `repo-harness mcp setup codex --repo . --scope project`.
+- A quick tunnel URL changed: update the Connector URL or switch to a named tunnel.
+- A Task is blocked: inspect `get_task_run`, shrink or re-plan the Task, then retry that Task rather than redispatching the full Issue.
